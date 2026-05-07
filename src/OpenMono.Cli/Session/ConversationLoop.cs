@@ -297,6 +297,21 @@ public sealed class ConversationLoop : IDisposable
                     Content = content,
                 });
             }
+            if (results.Any(r => r.BreakTurn))
+            {
+                if (_session.Meta.LastPlan is { Length: > 0 } plan)
+                {
+                    _output.WriteInfo("Plan ready — review below. Reply to approve or request changes.");
+                    _output.WriteMarkdown(plan);
+                }
+                _session.AddMessage(new Message
+                {
+                    Role = MessageRole.User,
+                    Content = PlanModeInstructions.PlanPresented,
+                });
+                _journal.FinishTurn("turn_break");
+                return;
+            }
         }
 
         await ReportIterationCapAsync(maxIterations, new List<ToolCall>(), ct);

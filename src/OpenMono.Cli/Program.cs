@@ -204,6 +204,7 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
     commands.Register(new ClearCommand());
     commands.Register(new CheckpointCommand(checkpointer));
     commands.Register(new ThinkCommand());
+    commands.Register(new PlanCommand());
 
     var compactor = new Compactor(llm, config.Llm.ContextSize);
     var loop = new ConversationLoop(llm, tools, permissions, renderer, renderer, renderer, config, session, compactor, memoryStore,
@@ -755,20 +756,14 @@ static class SystemPrompt
         - Prefer `IReadOnlyList<T>` / `IReadOnlyDictionary<K,V>` for return types that callers should not mutate.
         - Match the existing DI registration pattern in `Program.cs` when adding new services.
 
-        # Plan Mode
-
-        When EnterPlanMode has been called:
-        - You are in read-only mode. DO NOT call FileWrite, FileEdit, ApplyPatch, or Bash write commands.
-        - Read files, investigate the codebase, think through the approach.
-        - Produce a numbered, actionable plan as your response.
-        - Call ExitPlanMode explicitly before beginning implementation.
-
         # Sub-Agent Delegation
 
         Use the Agent tool when a task is self-contained and does not need your current conversation context:
-        - agent_type="Explore"  — broad codebase searches, runs efficiently and reports findings
+        - agent_type="general-purpose" — full tool access for complex multi-step tasks (default)
+        - agent_type="Explore"  — read-only codebase search, runs efficiently and reports findings
         - agent_type="Plan"     — produces an implementation plan for a complex change
         - agent_type="Coder"    — implements an isolated sub-task (single file, single function)
+        - agent_type="Verify"   — adversarial verification: runs build, tests, Roslyn diagnostics, and probes edge cases; cannot modify project files
 
         Sub-agents do NOT see this conversation. Write their prompts as self-contained briefings:
         include what to do, which files are relevant, and what format to return results in.

@@ -170,8 +170,8 @@ public sealed class ToolDispatcher : IDisposable
 
         if (_session.Meta.PlanMode && !tool.IsReadOnly)
         {
-            var planModeError = $"Plan mode is active — only read-only tools are allowed. " +
-                                $"Call ExitPlanMode first to make changes with {call.Name}.";
+            var planModeError = $"Plan mode is active — investigate and write a plan, do not edit files." +
+                                $"Call ExitPlanMode with your completed plan to resume, then retry {call.Name}.";
             _journal.RecordPermissionDecided(call.Id, false, "plan_mode_active");
             _renderer.WriteToolDenied(call.Name, planModeError);
             return ToolResult.Error(planModeError);

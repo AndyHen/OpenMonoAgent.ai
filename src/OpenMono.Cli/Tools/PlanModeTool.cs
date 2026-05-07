@@ -1,21 +1,55 @@
 using System.Text.Json;
-using OpenMono.Permissions;
+using OpenMono.Session;
 
 namespace OpenMono.Tools;
 
 public sealed class EnterPlanModeTool : ToolBase
 {
     public override string Name => "EnterPlanMode";
-    public override string Description => "Enter plan mode to decompose a complex task into steps before implementing. In plan mode, only read-only tools are available.";
-    public override PermissionLevel DefaultPermission => PermissionLevel.AutoAllow;
+    public override string Description =>
+        """
+        Use this tool proactively before starting any non-trivial implementation task.
+        Getting user sign-off on your approach before writing code prevents wasted effort.
 
+        ## When to use EnterPlanMode
+
+        Use it when ANY of these apply:
+
+        - New feature that involves architectural decisions (where does it go? what pattern?)
+        - Multiple valid approaches exist and the choice meaningfully affects the codebase
+        - Changes that touch more than 2-3 files
+        - Unclear requirements — you need to explore before you can understand the scope
+        - High-impact restructuring where the wrong approach causes significant rework
+        - You would normally ask a clarifying question about the approach — plan instead
+
+        ## When NOT to use EnterPlanMode
+
+        Skip it for simple tasks:
+        - Single-line or few-line fixes, typos, obvious bugs
+        - The user gave specific, detailed instructions and the path is clear
+        - Pure research/exploration (use the Agent tool with Explore type instead)
+        - The user said "just do it" or "go ahead" — start working
+
+        ## Examples
+
+        GOOD — use EnterPlanMode:
+          "Add user authentication" — session vs JWT, middleware structure, many files
+          "Improve performance" — need to profile first, multiple strategies possible
+          "Refactor the data layer" — architectural decisions, high impact
+
+        BAD — do not use EnterPlanMode:
+          "Fix the typo in the README"
+          "Add a console.log to debug this"
+          "What files handle routing?" — this is research, not implementation
+        """;
+
+    public override PermissionLevel DefaultPermission => PermissionLevel.AutoAllow;
+    // Session-state flip only — no filesystem / shell side effects.
     public override bool IsReadOnly => true;
 
     protected override SchemaBuilder DefineSchema() => new SchemaBuilder()
-        .AddString("reason", "Why you are entering plan mode")
+        .AddString("reason", "Why you are entering plan mode — what task are you planning?")
         .Require("reason");
-
-    public IReadOnlyList<Capability> RequiredCapabilities(JsonElement input) => [];
 
     protected override Task<ToolResult> ExecuteCoreAsync(JsonElement input, ToolContext context, CancellationToken ct)
     {
@@ -26,41 +60,48 @@ public sealed class EnterPlanModeTool : ToolBase
 
         context.Session.Meta.PlanMode = true;
 
-        return Task.FromResult(ToolResult.Success(
-            $"Entered plan mode: {reason}\n\n" +
-            "You are now in plan mode. Focus on:\n" +
-            "1. Analyzing the codebase (use FileRead, Glob, Grep)\n" +
-            "2. Breaking the task into concrete steps\n" +
-            "3. Identifying files that need changes\n" +
-            "4. Estimating complexity and risks\n\n" +
-            "Use ExitPlanMode when your plan is ready to present."));
+        return Task.FromResult(ToolResult.Success(PlanModeInstructions.Activation(reason)));
     }
 }
 
 public sealed class ExitPlanModeTool : ToolBase
 {
     public override string Name => "ExitPlanMode";
-    public override string Description => "Exit plan mode and return to normal execution. Present your plan to the user.";
-    public override PermissionLevel DefaultPermission => PermissionLevel.AutoAllow;
+    public override string Description =>
+        """
+        Exit plan mode and present the implementation plan to the user for approval.
+        Call this when your plan is complete and ready for the user to review.
 
+        The `plan` argument must be a structured numbered plan — not vague prose.
+        It should list: the approach, every file that changes, risks, and complexity.
+        """;
+
+    public override PermissionLevel DefaultPermission => PermissionLevel.AutoAllow;
+    // Must be read-only: the plan-mode gate would otherwise block the one tool that
+    // lifts plan mode, trapping the agent in a doom loop.
     public override bool IsReadOnly => true;
 
     protected override SchemaBuilder DefineSchema() => new SchemaBuilder()
-        .AddString("plan", "The plan to present to the user")
+        .AddString("plan", "The full numbered implementation plan to present to the user")
         .Require("plan");
-
-    public IReadOnlyList<Capability> RequiredCapabilities(JsonElement input) => [];
 
     protected override Task<ToolResult> ExecuteCoreAsync(JsonElement input, ToolContext context, CancellationToken ct)
     {
         var plan = input.GetProperty("plan").GetString()!;
 
         if (!context.Session.Meta.PlanMode)
-            return Task.FromResult(ToolResult.Error("Not in plan mode. Use EnterPlanMode first."));
+            return Task.FromResult(ToolResult.Error(
+                "Plan mode is not currently active — the previous plan was already presented to the user. " +
+                "If you need to plan again, call EnterPlanMode first, then call ExitPlanMode with the new plan."));
 
         context.Session.Meta.PlanMode = false;
+        context.Session.Meta.LastPlan = plan;
+
+        context.WriteOutput($"\n## Plan\n\n{plan}\n");
 
         return Task.FromResult(ToolResult.Success(
-            $"Exited plan mode. Here is the plan:\n\n{plan}"));
+            $"Exited plan mode. Present the plan below to the user, then stop — " +
+            $"write tools will be available on the next turn.\n\n{plan}")
+            .WithBreakTurn());
     }
 }

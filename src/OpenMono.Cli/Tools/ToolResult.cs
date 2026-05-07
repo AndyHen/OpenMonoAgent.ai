@@ -70,6 +70,9 @@ public sealed record ToolResult
 
     public ToolResult WithDiff(string? diff) =>
         diff is null ? this : this with { Diff = diff };
+        
+    public bool BreakTurn { get; init; }
+    public ToolResult WithBreakTurn() => this with { BreakTurn = true };
 }
 
 public enum ResultClass
