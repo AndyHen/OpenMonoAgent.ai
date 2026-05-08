@@ -454,7 +454,15 @@ cmd_agent() {
         local cfg_endpoint cfg_key
         cfg_endpoint=$(jq -r '.llm.endpoint // empty' "$settings")
         cfg_key=$(jq -r '.llm.api_key // empty' "$settings")
-        [[ -n "$cfg_endpoint" ]] && export OPENMONO_ENDPOINT="$cfg_endpoint"
+        # Don't override OPENMONO_ENDPOINT with a localhost address — inside the
+        # container network the llama-server service is only reachable by its
+        # service name.  docker-compose already defaults to http://llama-server:7474;
+        # exporting localhost would shadow that with an address the container can't reach.
+        if [[ -n "$cfg_endpoint" ]] && \
+           [[ "$cfg_endpoint" != "http://localhost:${LLAMA_PORT}" ]] && \
+           [[ "$cfg_endpoint" != "http://localhost:7474" ]]; then
+            export OPENMONO_ENDPOINT="$cfg_endpoint"
+        fi
         [[ -n "$cfg_key" ]] && export OPENMONO_API_KEY="$cfg_key"
     fi
 
