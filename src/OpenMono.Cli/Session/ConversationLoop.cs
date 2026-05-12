@@ -412,7 +412,7 @@ public sealed class ConversationLoop : IDisposable
         if (lastToolCalls.Count > 0)
         {
             var lastArgs = lastToolCalls[0].Arguments;
-            if (lastArgs.Length > 150) lastArgs = lastArgs[..150] + "…";
+            if (lastArgs.Length > 1000) lastArgs = lastArgs[..1000] + "…";
             _output.WriteInfo($"  Last action:  {lastToolCalls[0].Name} — {lastArgs}");
         }
 

@@ -243,7 +243,7 @@ public sealed class TerminalRenderer : IRenderer
 
     public void WriteToolStart(string toolName, string args)
     {
-        var truncatedArgs = args.Length > 80 ? args[..80] + "…" : args;
+        var truncatedArgs = args.Length > 1000 ? args[..1000] + "…" : args;
         _console.MarkupLine($"  [dim]⧫[/] [bold grey]{Markup.Escape(toolName)}[/] [dim]{Markup.Escape(truncatedArgs)}[/]");
     }
 

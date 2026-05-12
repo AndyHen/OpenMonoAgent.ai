@@ -633,7 +633,7 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
 
     internal void WriteToolStart(string n, string a)
     {
-        AddMessage(new Msg("tool", $"  ⧫ {n} {(a.Length > 60 ? a[..57] + "..." : a)}"));
+        AddMessage(new Msg("tool", $"  ⧫ {n} {(a.Length > 1000 ? a[..997] + "..." : a)}"));
         PaintConvThrottled(force: false);
     }
 
