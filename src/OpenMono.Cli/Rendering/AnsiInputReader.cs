@@ -310,6 +310,7 @@ internal sealed class AnsiInputReader(
     public Task<PermissionResponse> AskPermissionAsync(string tool, string summary, CancellationToken ct)
     {
         StopBackgroundInput();
+        painter.StopPaintThread();
         painter.AddMessage(new AnsiPainter.Msg("sys",
             $"{AnsiPainter.Fy}▶ Permission: {tool}{AnsiPainter.R}\n{summary}"));
         painter.PaintConvThrottled(force: true);
@@ -331,6 +332,7 @@ internal sealed class AnsiInputReader(
 
         var response = ReadPermissionKey();
         painter.Paint();
+        painter.StartPaintThread();
         StartBackgroundInput();
         return Task.FromResult(response);
     }
