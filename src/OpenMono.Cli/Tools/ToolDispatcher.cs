@@ -22,8 +22,6 @@ public sealed class ToolDispatcher : IDisposable
     private readonly ToolResultCache _cache;
     private readonly ArtifactStore _artifactStore;
 
-    private readonly DoomLoopDetector _doomLoop = new();
-
     public ToolDispatcher(
         ToolRegistry tools,
         PermissionEngine permissions,
@@ -60,14 +58,6 @@ public sealed class ToolDispatcher : IDisposable
     {
         if (toolCalls.Count == 0)
             return [];
-
-        if (_doomLoop.Check(toolCalls))
-        {
-            _renderer.WriteWarning("Doom loop detected — same tool calls repeated 3 times");
-            return [ToolResult.InvalidInput(
-                "[System: Doom loop detected — you called the same tools 3 times in a row with identical arguments. Stop repeating and try a different approach, or ask the user for help.]",
-                "Try a different approach or ask the user for clarification.")];
-        }
 
         var context = BuildToolContext();
         var results = new ToolResult[toolCalls.Count];

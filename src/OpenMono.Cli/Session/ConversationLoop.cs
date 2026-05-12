@@ -32,8 +32,6 @@ public sealed class ConversationLoop : IDisposable
     private readonly ToolResultCache _cache;
     private readonly ArtifactStore _artifactStore;
 
-    private readonly DoomLoopDetector _doomLoop = new();
-
     private const int LargeResultThreshold = 20_000;
 
     public ConversationLoop(
@@ -80,7 +78,6 @@ public sealed class ConversationLoop : IDisposable
 
     public async Task RunTurnAsync(string userInput, CancellationToken ct)
     {
-        _doomLoop.Reset();
         _session.AddMessage(new Message { Role = MessageRole.User, Content = userInput });
         _session.TurnCount++;
         _liveFeedback?.BeginTurn();
@@ -150,13 +147,11 @@ public sealed class ConversationLoop : IDisposable
                     cpSw.Stop();
                     _output.WriteInfo($"Checkpoint #{_session.Checkpoints.Count} stored — {entry.MessagesCompressed} messages compressed in {cpSw.Elapsed.TotalSeconds:F1}s.");
                     _output.WriteDebug($"[Checkpoint] Done — effective window={_checkpointer.BuildContextWindow(_session).Count} messages");
-                    _doomLoop.Reset();
                     i = -1; continue;
                 }
                 else if (_compactor.NeedsCompaction(_checkpointer.BuildContextWindow(_session), iterPromptTokens))
                 {
                     await RunCompactionAsync(iterPromptTokens, customInstructions: null, ct);
-                    _doomLoop.Reset();
                     i = -1; continue;
                 }
             }
@@ -297,20 +292,6 @@ public sealed class ConversationLoop : IDisposable
 
                 _output.WriteDebug("[Turn] Exiting: text_only response, no truncation detected");
                 _journal.FinishTurn("text_only");
-                return;
-            }
-
-            if (_doomLoop.Check(toolCalls))
-            {
-
-                await siblingAbortCts.CancelAsync();
-                _output.WriteWarning("Doom loop detected: agent is repeating the same tool calls. Stopping.");
-                _session.AddMessage(new Message
-                {
-                    Role = MessageRole.User,
-                    Content = "[System: Doom loop detected — you called the same tools 3 times in a row with identical arguments. Stop repeating and try a different approach, or ask the user for help.]",
-                });
-                _journal.FinishTurn("doom_loop");
                 return;
             }
 
