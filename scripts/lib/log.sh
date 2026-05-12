@@ -40,6 +40,18 @@ _cleanup_terminal() {
 # Set trap for common exit signals
 trap _cleanup_terminal EXIT INT TERM HUP
 
+# ERR trap — fires when any command exits non-zero under set -e.
+# Logs the failing command and line number so the log is always useful.
+# Does not fire for intentionally handled errors (||, if, &&).
+set -o errtrace
+_trap_err() {
+    local exit_code=$?
+    local line="${BASH_LINENO[0]:-?}"
+    local cmd="${BASH_COMMAND:-?}"
+    _log "FATAL: exit $exit_code at line $line — $cmd"
+}
+trap '_trap_err' ERR
+
 OPENMONO_VERBOSE="${OPENMONO_VERBOSE:-0}"
 
 # Log file: shared across install_prereqs.sh and install.sh within one setup run
@@ -140,4 +152,96 @@ die() {
 show_log_location() {
     echo ""
     printf "${DIM}Full log: %s${NC}\n" "$OPENMONO_LOG_FILE"
+}
+
+# get_shell_rc_files — output rc file paths for the user's current shell
+# Outputs one file per line
+get_shell_rc_files() {
+    local shell_name
+    shell_name=$(basename "$SHELL")
+
+    case "$shell_name" in
+        zsh)
+            echo "$HOME/.zshrc"
+            echo "$HOME/.zprofile"
+            ;;
+        bash)
+            echo "$HOME/.bash_profile"
+            echo "$HOME/.bashrc"
+            ;;
+        fish)
+            echo "$HOME/.config/fish/config.fish"
+            ;;
+        *)
+            echo "$HOME/.bashrc"
+            echo "$HOME/.bash_profile"
+            echo "$HOME/.zshrc"
+            ;;
+    esac
+}
+
+# ── Setup preferences persistence ────────────────────────────────────────────
+# Stores role and GPU mode choices across script restarts (e.g. mid-install reboot).
+
+_SETUP_PREFS_FILE="$HOME/.openmono/.setup_prefs"
+
+_save_setup_pref() {
+    local key="$1" val="$2"
+    mkdir -p "$(dirname "$_SETUP_PREFS_FILE")"
+    if [[ -f "$_SETUP_PREFS_FILE" ]]; then
+        grep -v "^${key}=" "$_SETUP_PREFS_FILE" > "${_SETUP_PREFS_FILE}.tmp" && \
+            mv "${_SETUP_PREFS_FILE}.tmp" "$_SETUP_PREFS_FILE" || true
+    fi
+    echo "${key}=${val}" >> "$_SETUP_PREFS_FILE"
+}
+
+clear_setup_prefs() {
+    rm -f "$_SETUP_PREFS_FILE"
+}
+
+# role_prompt — interactive role selection (used during setup if OPENMONO_ROLE not set)
+# Sets $OPENMONO_ROLE to: full, inference, or agent
+role_prompt() {
+    if [[ -n "${OPENMONO_ROLE:-}" ]]; then
+        return 0  # Already set via env/flag, skip prompt
+    fi
+
+    # Restore from a previous interrupted run
+    if [[ -f "$_SETUP_PREFS_FILE" ]]; then
+        # shellcheck source=/dev/null
+        source "$_SETUP_PREFS_FILE"
+        if [[ -n "${OPENMONO_ROLE:-}" ]]; then
+            echo ""
+            info "Restoring saved role from previous session: ${BOLD}$OPENMONO_ROLE${NC}"
+            export OPENMONO_ROLE
+            return 0
+        fi
+    fi
+
+    _role_invalid=0
+    while true; do
+        echo ""
+        [ "$_role_invalid" -eq 1 ] && printf "  ${RED}Please enter 1, 2, or 3.${NC}\n\n"
+        echo "  What do you want to install on this machine?"
+        echo ""
+        echo "  1) Both — agent + inference server on one box (single-box mode)"
+        echo "  2) Inference server only — dedicated box that runs the model (GPU or CPU)"
+        echo "             (pair with a separate agent box via openmono tunnel)"
+        echo "  3) Agent only — laptop/workstation that talks to a remote inference server"
+        echo "             (dual-box mode; point at inference box with openmono config)"
+        echo ""
+        printf "  Enter 1, 2 or 3 [default: 1]: "
+        read -r -n 1 _role_choice
+        echo ""
+        _role_choice="${_role_choice:-1}"
+        case "$_role_choice" in
+            1) OPENMONO_ROLE=full      ; break ;;
+            2) OPENMONO_ROLE=inference ; break ;;
+            3) OPENMONO_ROLE=agent     ; break ;;
+            *) _role_invalid=1 ;;
+        esac
+    done
+    export OPENMONO_ROLE
+    _save_setup_pref "OPENMONO_ROLE" "$OPENMONO_ROLE"
+    echo ""
 }

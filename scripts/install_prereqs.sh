@@ -24,25 +24,24 @@ fi
 
 # Add openmono to PATH for current session
 export PATH="$REPO_DIR:$PATH"
-
-# Add to shell rc files for future sessions (Ubuntu/Linux)
-for rc_file in "$HOME/.bashrc" "$HOME/.zshrc"; do
-    if [ -f "$rc_file" ] && ! grep -q "export PATH=.*$REPO_DIR" "$rc_file"; then
-        {
-            echo ""
-            echo "# OpenMono.ai CLI"
-            echo "export PATH=$REPO_DIR:\$PATH"
-        } >> "$rc_file"
-    fi
-done
+# (RC file updates are handled by openmono cmd_setup after installation completes)
 
 # Configurable NVIDIA driver version (default: 580-server-open)
 DRIVER_VERSION="${DRIVER_VERSION:-580-server-open}"
 
-# GPU mode: determined by flags or user prompt (exported for install.sh)
+# GPU mode: determined by flags, persisted prefs, or user prompt (exported for install.sh)
 GPU_MODE="${OPENMONO_GPU:-}"
 if [[ -n "${OPENMONO_CPU:-}" ]]; then
     GPU_MODE=0
+fi
+# If not set by a flag, restore from a previous interrupted run
+if [[ -z "$GPU_MODE" && -f "$HOME/.openmono/.setup_prefs" ]]; then
+    _saved_gpu=$(grep '^GPU_MODE=' "$HOME/.openmono/.setup_prefs" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]' || true)
+    if [[ -n "$_saved_gpu" ]]; then
+        GPU_MODE="$_saved_gpu"
+        # Defer the "restoring" message until after log.sh helpers are confirmed sourced
+        _GPU_MODE_RESTORED=true
+    fi
 fi
 export GPU_MODE
 
@@ -153,6 +152,12 @@ fi
 
 step 5 $TOTAL_STEPS "Checking for NVIDIA GPU"
 
+if [[ "${OPENMONO_ROLE:-}" == "agent" ]]; then
+    info "Agent-only role — skipping GPU detection"
+    GPU_MODE=0
+    HAS_NVIDIA_HW=false
+else
+
 HAS_NVIDIA_HW=false
 # Try lspci first (most descriptive)
 if command -v lspci &>/dev/null && lspci 2>/dev/null | grep -qi 'nvidia'; then
@@ -164,28 +169,46 @@ elif grep -qi "0x10de" /sys/bus/pci/devices/*/vendor 2>/dev/null; then
     detail "NVIDIA GPU detected via PCI vendor ID (0x10de)"
 fi
 
-# Determine GPU mode: explicit flag takes precedence, then auto-detect with prompt
-if [[ -z "$GPU_MODE" ]]; then
-    # No flag provided — auto-detect and prompt if NVIDIA hardware is found
-    if [ "$HAS_NVIDIA_HW" = true ] || command -v nvidia-smi &>/dev/null; then
+# Determine GPU mode: explicit flag / persisted pref takes precedence, then auto-detect with prompt
+if [[ -n "$GPU_MODE" ]]; then
+    if [[ "${_GPU_MODE_RESTORED:-false}" == "true" ]]; then
+        info "Restoring saved GPU mode from previous session: ${BOLD}$([ "$GPU_MODE" = "1" ] && echo GPU || echo CPU)${NC}"
+    fi
+elif [ "$HAS_NVIDIA_HW" = true ] || command -v nvidia-smi &>/dev/null; then
+    if command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null 2>&1; then
+        # Driver is already loaded and active (e.g. post-reboot re-run) — skip prompt
+        GPU_MODE=1
+        ok "NVIDIA GPU detected and driver active — GPU mode enabled"
+    else
+        # Hardware present but driver not yet active — ask the user
         echo ""
         printf "${BLUE}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
         printf "${BLUE}${BOLD}  NVIDIA GPU Detected${NC}\n"
         printf "${BLUE}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
         echo ""
-        printf "  Would you like to install on GPU? ${BOLD}(Y/n)${NC}: "
-        read -r _gpu_choice
-        _gpu_choice="${_gpu_choice:-Y}"
-        if [[ "$_gpu_choice" =~ ^[Yy]$ ]]; then
-            GPU_MODE=1
-        else
-            GPU_MODE=0
+        _gpu_invalid=0
+        while true; do
+            [ "$_gpu_invalid" -eq 1 ] && printf "  ${RED}Please press Y or N.${NC}\n\n"
+            printf "  Would you like to install on GPU? ${BOLD}(Y/n)${NC}: "
+            read -r -n 1 _gpu_choice
+            echo ""
+            case "${_gpu_choice:-Y}" in
+                [Yy]) GPU_MODE=1; break ;;
+                [Nn]) GPU_MODE=0; break ;;
+                *)    _gpu_invalid=1 ;;
+            esac
+        done
+        _save_setup_pref "GPU_MODE" "$GPU_MODE"
+        if [ "$GPU_MODE" = "1" ]; then
+            echo ""
+            info "NVIDIA drivers will be installed. They will only become active after a reboot."
+            info "Setup will continue normally — you will be prompted to reboot at the end."
         fi
         echo ""
-    else
-        # No NVIDIA hardware detected
-        GPU_MODE=0
     fi
+else
+    # No NVIDIA hardware detected
+    GPU_MODE=0
 fi
 
 if [ "$GPU_MODE" = 0 ]; then
@@ -217,28 +240,7 @@ else
 
         run $SUDO ubuntu-drivers autoinstall || warn "Driver install had warnings — check log"
         ok "NVIDIA drivers installed"
-
-        echo ""
-        printf "${BLUE}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
-        printf "${BLUE}${BOLD}  NVIDIA drivers installed — reboot required${NC}\n"
-        printf "${BLUE}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
-        echo ""
-        printf "  Would you like to reboot now? ${BOLD}(Y/n)${NC}: "
-        read -r _reboot_choice
-        _reboot_choice="${_reboot_choice:-Y}"
-
-        if [[ "$_reboot_choice" =~ ^[Yy]$ ]]; then
-            echo ""
-            info "After reboot, run: ${BOLD}openmono setup${NC}"
-            echo ""
-            info "Rebooting in 10 seconds (press Ctrl+C to cancel)..."
-            sleep 10
-            $SUDO reboot
-        else
-            err "Reboot cancelled. NVIDIA drivers will not be functional until rebooted."
-            err "Run: sudo reboot"
-            exit 1
-        fi
+        NVIDIA_REBOOT_PENDING=true
     fi
 
     # CUDA toolkit (optional — pre-built images include CUDA)
@@ -262,6 +264,12 @@ else
         ok "nvidia-container-toolkit installed"
     fi
 fi
+
+fi # end agent-role GPU skip
+
+# Write GPU_MODE back to parent so install.sh doesn't re-detect independently
+mkdir -p "$HOME/.openmono"
+echo "GPU_MODE=$GPU_MODE" > "$HOME/.openmono/.tmp_gpu_mode"
 
 # ── Step 6: Docker ────────────────────────────────────────────────────────────
 
@@ -362,23 +370,18 @@ if [ "$INSTALL_DOCKER_CE" = true ] || ! command -v docker &>/dev/null; then
         run $SUDO systemctl enable --now docker 2>/dev/null || true
     fi
 
-    # Re-exec this script under 'sg docker' so all remaining steps (and the
-    # subsequent install.sh) run with the docker group active. The user
-    # never needs to manually run 'newgrp docker'. exec replaces the current
-    # process; the re-run is fast because every apt/command check hits the
-    # already-installed branch.
-    if ! docker info &>/dev/null 2>&1 && id -nG 2>/dev/null | grep -qw docker; then
-        if command -v sg &>/dev/null && sg docker -c "docker info" &>/dev/null 2>&1; then
-            info "Re-launching with docker group active (no manual 'newgrp' needed)..."
-            exec sg docker -- bash "$0" "$@"
-        else
-            warn "Docker group added but sg activation failed — a shell restart is needed."
-            warn "After this script completes run ONE of the following, then re-run install.sh:"
-            warn "  1. newgrp docker           (activate in current shell)"
-            warn "  2. exec su -l \$USER       (fresh login shell)"
-            warn "  3. Log out and back in"
-        fi
-    fi
+    # Note: docker group activation is handled by the openmono wrapper after
+    # this script exits — it detects the new membership via getent and re-execs
+    # the entire setup under sg docker. Do not re-exec here: re-running this
+    # script would replay interactive prompts (e.g. GPU mode) a second time.
+fi
+
+# Ensure user is in the docker group even when Docker was pre-installed.
+# The openmono wrapper handles sg re-exec after this script exits.
+if command -v docker &>/dev/null && ! id -nG 2>/dev/null | grep -qw docker; then
+    run $SUDO groupadd docker 2>/dev/null || true
+    run $SUDO usermod -aG docker "$USER" || true
+    ok "Added '$USER' to the docker group"
 fi
 
 if docker compose version &>/dev/null 2>&1; then
@@ -485,33 +488,55 @@ if [ "$HAS_NVIDIA_HW" = true ]; then
     check_installed nvidia-smi
 fi
 
-# Check if docker is accessible without sudo
-DOCKER_NEEDS_GROUP=false
-if command -v docker &>/dev/null; then
-    if ! docker info &>/dev/null 2>&1; then
-        DOCKER_NEEDS_GROUP=true
+echo ""
+ok "Prerequisites ready"
+echo ""
+show_log_location
+
+# ── Deferred reboot prompt (NVIDIA drivers installed this run) ────────────────
+
+if [ "${NVIDIA_REBOOT_PENDING:-false}" = "true" ]; then
+    _reboot_done_file="$HOME/.openmono/.nvidia_reboot_done"
+    if [ -f "$_reboot_done_file" ] || (command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null 2>&1); then
+        ok "NVIDIA drivers are active — no reboot needed"
+    else
+        echo ""
+        printf "${BLUE}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
+        printf "${BLUE}${BOLD}  Reboot Required${NC}\n"
+        printf "${BLUE}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
+        echo ""
+        info "NVIDIA drivers are installed but will only become active after a reboot."
+        echo ""
+        _reboot_invalid=0
+        while true; do
+            [ "$_reboot_invalid" -eq 1 ] && printf "  ${RED}Please press Y or N.${NC}\n\n"
+            printf "  Would you like to reboot now? ${BOLD}(Y/n)${NC}: "
+            read -r -n 1 _reboot_choice
+            echo ""
+            case "${_reboot_choice:-Y}" in
+                [Yy]) _reboot_choice=Y; break ;;
+                [Nn]) _reboot_choice=N; break ;;
+                *)    _reboot_invalid=1 ;;
+            esac
+        done
+
+        if [[ "$_reboot_choice" == "Y" ]]; then
+            touch "$_reboot_done_file"
+            echo ""
+            info "After reboot, run: ${BOLD}$REPO_DIR/openmono setup${NC}"
+            echo ""
+            info "Rebooting in 10 seconds (press Ctrl+C to cancel)..."
+            sleep 10
+            $SUDO reboot
+        else
+            warn "Reboot skipped. NVIDIA drivers will not be active until you reboot."
+            warn "Run: sudo reboot"
+        fi
     fi
 fi
 
-echo ""
-ok "Prerequisites ready"
-
-if [ "$DOCKER_NEEDS_GROUP" = true ]; then
-    echo ""
-    printf "${YELLOW}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
-    printf "${YELLOW}${BOLD}  Docker Group Activation Required${NC}\n"
-    printf "${YELLOW}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
-    echo ""
-    echo "  The 'sg' command could not activate the docker group automatically."
-    echo "  Run ONE of the following before running install.sh:"
-    echo ""
-    echo "    ${BOLD}newgrp docker${NC}              # Activate in current shell"
-    echo "    ${BOLD}exec su -l \$USER${NC}          # Start fresh login shell"
-    echo "    ${BOLD}Log out and back in${NC}        # Full session refresh"
-    echo ""
-    echo "  After activation, verify with: docker info"
-    echo "  Then run: ./scripts/install.sh"
-    echo ""
+# Write GPU_MODE to the shared env file so install.sh picks it up without re-detecting
+if [[ -n "${OPENMONO_ENV_FILE:-}" ]]; then
+    echo "export GPU_MODE=\"${GPU_MODE:-0}\"" >> "$OPENMONO_ENV_FILE"
+    _log "GPU_MODE=${GPU_MODE:-0} written to env file"
 fi
-
-show_log_location

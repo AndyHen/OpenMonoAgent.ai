@@ -26,7 +26,7 @@ services:
     volumes:
       - ../models:/models:ro
     ports:
-      - "7474:7474"
+      - "${LLAMA_PORT:-7474}:7474"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:7474/health"]

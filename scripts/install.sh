@@ -17,9 +17,16 @@ set -euo pipefail
 #   OPENMONO_CPU=1        Force CPU mode (removes any GPU override)
 #   OPENMONO_VERBOSE=1    Show detailed command output
 #   LLAMA_PORT=7474       llama-server host port (default 7474)
+#
+# Dev/testing only (not user-facing):
+#   OPENMONO_MODEL_MIRROR=http://192.168.x.x:8080
+#                         Override the HuggingFace base URL for model downloads.
+#                         The path and filename are preserved; only the host is
+#                         swapped.  Leave unset for normal HuggingFace downloads.
 # ──────────────────────────────────────────────────────────────────────────────
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INSTALL_DIR="$(dirname "$SCRIPT_DIR")"  # repo root (parent of scripts/)
 # shellcheck source=lib/log.sh
 source "$SCRIPT_DIR/lib/log.sh"
 
@@ -32,43 +39,33 @@ source "$SCRIPT_DIR/lib/log.sh"
 #   (c) but the user IS in the docker group at the system level,
 # then re-exec ourselves via `sg docker` so the group IS active in the
 # subshell. Silent if already fine.
-if [[ -z "${OPENMONO_DOCKER_SG_REEXEC:-}" ]] \
-   && command -v docker &>/dev/null \
-   && ! docker info &>/dev/null 2>&1 \
-   && command -v getent &>/dev/null \
-   && getent group docker 2>/dev/null | grep -qw "$(id -un)"; then
-    echo "[INFO] Activating docker group for this session via 'sg docker'..."
-    export OPENMONO_DOCKER_SG_REEXEC=1
-    exec sg docker -c "bash \"$0\" $*"
+if command -v docker &>/dev/null && ! docker info &>/dev/null 2>&1; then
+    if id -nG 2>/dev/null | grep -qw docker; then
+        if command -v sg &>/dev/null && sg docker -c "docker info" &>/dev/null 2>&1; then
+            info "Re-launching with docker group active (no manual 'newgrp' needed)..."
+            exec sg docker -- bash "$0" "$@"
+        else
+            err "Docker group membership exists but sg activation failed."
+            err "Run ONE of the following to activate the docker group:"
+            err "  1. newgrp docker"
+            err "  2. exec su -l \$USER"
+            err "  3. Log out and back in"
+            err "Then resume installation with:  $INSTALL_DIR/openmono setup"
+            exit 1
+        fi
+    fi
+fi
+
+# Source the shared env file written by install_prereqs.sh (GPU_MODE, etc.)
+# shellcheck source=/dev/null
+if [[ -n "${OPENMONO_ENV_FILE:-}" ]] && [[ -f "$OPENMONO_ENV_FILE" ]]; then
+    source "$OPENMONO_ENV_FILE"
 fi
 
 # Role selector — drives which of the 8 install steps actually run.
 # If the caller (openmono setup) already exported OPENMONO_ROLE, use it.
-# Otherwise prompt — this handles the ./scripts/install.sh direct-run path
-# where the openmono CLI doesn't exist yet.
-if [[ -z "${OPENMONO_ROLE:-}" ]]; then
-    echo ""
-    echo "  What do you want to install on this machine?"
-    echo ""
-    echo "  1) Both — agent + inference server on one box (single-box mode)"
-    echo "  2) Inference server only — GPU box that runs the model"
-    echo "             (pair with a separate agent box via openmono tunnel)"
-    echo "  3) Agent only — laptop/workstation that talks to a remote inference server"
-    echo "             (dual-box mode; point at inference box with openmono config)"
-    echo ""
-    while true; do
-        printf "  Enter 1, 2 or 3 [default: 1]: "
-        read -r _role_choice
-        _role_choice="${_role_choice:-1}"
-        case "$_role_choice" in
-            1) OPENMONO_ROLE=full      ; break ;;
-            2) OPENMONO_ROLE=inference ; break ;;
-            3) OPENMONO_ROLE=agent     ; break ;;
-            *) echo "  Please enter 1, 2, or 3." ;;
-        esac
-    done
-    echo ""
-fi
+# Otherwise prompt — this handles the direct-run path where openmono CLI isn't available yet.
+role_prompt
 
 case "$OPENMONO_ROLE" in
     full|inference|agent) ;;
@@ -163,35 +160,11 @@ check_prerequisites() {
             printf "  ${YELLOW}⚠${NC}  %s\n" "$w"
         done
         echo ""
-        # Docker permission issue is critical - can't continue
-        if ! docker info &>/dev/null 2>&1; then
-            err "Docker is installed but not accessible without sudo."
-            err "This will cause the installation to fail."
-            echo ""
-            err "To fix this, run one of the following:"
-            err "  1. newgrp docker              (if already in docker group)"
-            err "  2. sudo usermod -aG docker \$USER && newgrp docker"
-            err "  3. Log out and back in"
-            echo ""
-            die "Cannot continue without docker access."
-        fi
     fi
 
     ok "All prerequisites satisfied"
 }
 
-# ── Docker group auto-activation ─────────────────────────────────────────────
-# If docker is installed but not accessible (user was just added to the group by
-# install_prereqs.sh), re-exec this script under 'sg docker' so all docker
-# commands work without sudo — no manual 'newgrp docker' step required.
-if command -v docker &>/dev/null && ! docker info &>/dev/null 2>&1; then
-    if id -nG 2>/dev/null | grep -qw docker && command -v sg &>/dev/null; then
-        if sg docker -c "docker info" &>/dev/null 2>&1; then
-            info "Docker group not yet active — re-launching installer with it active..."
-            exec sg docker -- bash "$0" "$@"
-        fi
-    fi
-fi
 
 info "Checking prerequisites..."
 check_prerequisites
@@ -214,15 +187,41 @@ ok "Install directory: $INSTALL_DIR"
 
 next_step "Checking system requirements"
 
-# RAM — only matters on machines that will load the 18.5 GB model
-if command -v free &>/dev/null; then
-    TOTAL_MEM=$(free -g | awk '/^Mem:/{print $2}')
-    if [ "$OPENMONO_ROLE" = "agent" ]; then
-        ok "RAM: ${TOTAL_MEM}GB (no model loaded locally on agent box)"
-    elif [ "$TOTAL_MEM" -lt 20 ]; then
-        warn "Only ${TOTAL_MEM}GB RAM detected (model needs ~20GB). It may be slow or fail to load."
+# GPU_MODE is exported by install_prereqs.sh (1 = GPU, 0 = CPU).
+# Query VRAM to determine the right model tier. Only for roles that load a model.
+# Tiers:  24GB+ → Qwen3.6-27B Q4  (full accuracy)
+#         16GB  → Qwen3.6-35B-A3B Q3 + q4 kv cache  (lower accuracy)
+#         12GB  → Qwen3.5-9B Q4 + q4 kv cache        (lower accuracy)
+#         CPU   → Qwen3.6-35B-A3B Q4_K_XL (MoE, 3.5B active params)
+_VRAM_MB=0
+_GPU_TIER=0
+MODEL_NAME=""
+MODEL_ACCURACY=""
+if [ "$OPENMONO_ROLE" != "agent" ]; then
+    if [ "${GPU_MODE:-0}" = "1" ]; then
+        if command -v nvidia-smi &>/dev/null; then
+            _VRAM_MB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | awk 'NR==1{print $1}')
+            _VRAM_MB=${_VRAM_MB:-0}
+            if   [ "$_VRAM_MB" -ge 24000 ]; then _GPU_TIER=24; ok "GPU VRAM: $(( (_VRAM_MB + 512) / 1024 ))GB — full accuracy model (Qwen3.6-27B)"
+            elif [ "$_VRAM_MB" -ge 16000 ]; then _GPU_TIER=16; warn "GPU VRAM: $(( (_VRAM_MB + 512) / 1024 ))GB — lower accuracy model (Qwen3.6-35B-A3B Q3 + q4 kv cache). For best results use 24GB+ VRAM."
+            elif [ "$_VRAM_MB" -ge 12000 ]; then _GPU_TIER=12; warn "GPU VRAM: $(( (_VRAM_MB + 512) / 1024 ))GB — lower accuracy model (Qwen3.5-9B Q4 + q4 kv cache). For best results use 24GB+ VRAM."
+            else
+                warn "GPU mode selected but only $(( (_VRAM_MB + 512) / 1024 ))GB VRAM — minimum is 12GB. Falling back to CPU mode."
+                GPU_MODE=0
+            fi
+        else
+            warn "GPU mode selected but nvidia-smi not found. Falling back to CPU mode."
+            GPU_MODE=0
+        fi
     else
-        ok "RAM: ${TOTAL_MEM}GB"
+        if command -v free &>/dev/null; then
+            TOTAL_MEM=$(free -g | awk '/^Mem:/{print $2}')
+            if [ "$TOTAL_MEM" -lt 20 ]; then
+                warn "Only ${TOTAL_MEM}GB RAM detected — CPU model needs ~20GB. It may be slow or fail to load."
+            else
+                ok "RAM: ${TOTAL_MEM}GB"
+            fi
+        fi
     fi
 fi
 
@@ -262,29 +261,37 @@ fi
 
 cd "$INSTALL_DIR"
 
-# Early GPU sniff — used to select the right model before Step 6 does full validation.
-# GPU:  Qwen3.6-27B-Q4_K_M  (dense 27B, needs VRAM for speed)
-# CPU:  Qwen3.6-35B-A3B-UD-Q4_K_XL (MoE, only 3.5B active params — fast on CPU)
-_EARLY_GPU=false
-if [ "${OPENMONO_GPU:-}" = "1" ]; then
-    _EARLY_GPU=true
-elif [ "${OPENMONO_CPU:-}" != "1" ] && command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null 2>&1; then
-    docker info 2>/dev/null | grep -q nvidia && _EARLY_GPU=true
-fi
-
 # ── Step 4: Download model (inference + full only) ───────────────────────────
 
 if [ "$OPENMONO_ROLE" != "agent" ]; then
     MODEL_DIR="$INSTALL_DIR/models"
 
-    if [ "$_EARLY_GPU" = true ]; then
+    if [ "$_GPU_TIER" -eq 24 ]; then
         MODEL_NAME="Qwen3.6-27B-Q4_K_M.gguf"
         MODEL_URL="https://huggingface.co/unsloth/Qwen3.6-27B-GGUF/resolve/main/Qwen3.6-27B-Q4_K_M.gguf"
-        next_step "Downloading Qwen3.6-27B-Q4_K_M model (~15 GB) [GPU]"
+        MODEL_ACCURACY="full"
+        next_step "Downloading Qwen3.6-27B-Q4_K_M (~15GB) [GPU 24GB+ — full accuracy]"
+    elif [ "$_GPU_TIER" -eq 16 ]; then
+        MODEL_NAME="Qwen3.6-27B-UD-IQ3_XXS.gguf"
+        MODEL_URL="https://huggingface.co/unsloth/Qwen3.6-27B-GGUF/resolve/main/Qwen3.6-27B-UD-IQ3_XXS.gguf"
+        MODEL_ACCURACY="lower"
+        next_step "Downloading Qwen3.6-27B-UD-IQ3_XXS (~12GB) [GPU 16GB — lower accuracy]"
+    elif [ "$_GPU_TIER" -eq 12 ]; then
+        MODEL_NAME="Qwen3.5-9B-Q4_K_M.gguf"
+        MODEL_URL="https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf"
+        MODEL_ACCURACY="lower"
+        next_step "Downloading Qwen3.5-9B-Q4_K_M (~5GB) [GPU 12GB — lower accuracy]"
     else
         MODEL_NAME="qwen3.6-35b-a3b-ud-q4_k_xl.gguf"
         MODEL_URL="https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf"
-        next_step "Downloading Qwen3.6-35B-A3B model (~17.6 GB) [CPU]"
+        MODEL_ACCURACY="standard"
+        next_step "Downloading Qwen3.6-35B-A3B (~17.6GB) [CPU]"
+    fi
+
+    # Dev override: fetch from local mirror at http://<host>/models/<filename>
+    if [ -n "${OPENMONO_MODEL_MIRROR:-}" ]; then
+        MODEL_URL="${OPENMONO_MODEL_MIRROR%/}/models/${MODEL_NAME}"
+        detail "Model mirror active: $MODEL_URL"
     fi
 
     MODEL_FILE="$MODEL_DIR/$MODEL_NAME"
@@ -388,44 +395,37 @@ if [ "$OPENMONO_ROLE" != "inference" ]; then
     fi
 fi
 
-# ── Step 6: Detect/configure GPU mode (inference + full only) ────────────────
+# ── Step 6: Configure GPU/CPU mode (inference + full only) ───────────────────
 
 if [ "$OPENMONO_ROLE" != "agent" ]; then
-    next_step "Detecting GPU / CPU mode"
+    next_step "Configuring GPU / CPU mode"
 
-HAS_GPU=false
-if [ "${OPENMONO_GPU:-}" = "1" ]; then
-    info "GPU mode forced via --gpu"
-    HAS_GPU=true
-elif [ "${OPENMONO_CPU:-}" = "1" ]; then
-    info "CPU mode forced via --cpu"
-    HAS_GPU=false
-elif command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null 2>&1; then
-    if docker info 2>/dev/null | grep -q nvidia; then
-        info "NVIDIA GPU + nvidia runtime detected"
-        HAS_GPU=true
+    if [ "${GPU_MODE:-0}" = "1" ]; then
+        info "GPU mode (selected during prerequisites)"
     else
-        warn "NVIDIA GPU detected, but Docker is not configured with the nvidia runtime."
-        warn "Run: openmono setup  (installs nvidia-container-toolkit)"
-        warn "Falling back to CPU mode."
+        info "CPU mode"
     fi
-else
-    if [ "${HAS_NVIDIA_HW:-false}" = true ]; then
-        warn "NVIDIA GPU hardware detected, but drivers are not working or not installed."
-        warn "Falling back to CPU mode."
-    else
-        info "No NVIDIA GPU detected — using CPU mode"
-    fi
-fi
 
 OVERRIDE_FILE="$INSTALL_DIR/docker/docker-compose.override.yml"
 # Derive a clean alias from the filename (strip .gguf) so /props returns the right name
 MODEL_ALIAS="${MODEL_NAME%.gguf}"
 
-if [ "$HAS_GPU" = true ]; then
+if [ "${GPU_MODE:-0}" = "1" ]; then
+    # 24GB tier: q8 kv cache (high quality); 16GB/12GB tiers: q4 kv cache (saves VRAM)
+    if [ "$_GPU_TIER" -ge 24 ]; then
+        _KV_K="q8_0"; _KV_V="q8_0"
+        _CTX=196608
+    elif [ "$_GPU_TIER" -ge 16 ]; then
+        _KV_K="q4_0"; _KV_V="q4_0"
+        _CTX=180224
+    else
+        _KV_K="q4_0"; _KV_V="q4_0"
+        _CTX=196608
+    fi
+    [ "$MODEL_ACCURACY" = "lower" ] && info "Lower accuracy model selected — q4 kv cache enabled to fit $(( (_VRAM_MB + 512) / 1024 ))GB VRAM"
     info "Writing GPU override: $OVERRIDE_FILE"
     cat > "$OVERRIDE_FILE" <<EOF
-# GPU configuration (auto-generated by install.sh)
+# GPU configuration (auto-generated by install.sh — ${MODEL_ACCURACY:-full} accuracy)
 services:
   llama-server:
     image: ghcr.io/ggml-org/llama.cpp:server-cuda
@@ -434,12 +434,12 @@ services:
       --alias $MODEL_ALIAS
       --host 0.0.0.0
       --port 7474
-      --ctx-size 196608
+      --ctx-size $_CTX
       --threads 14
       --n-gpu-layers 99
       --flash-attn on
-      --cache-type-k q8_0
-      --cache-type-v q8_0
+      --cache-type-k $_KV_K
+      --cache-type-v $_KV_V
       --batch-size 2048
       --ubatch-size 1024
       --parallel 1
@@ -529,7 +529,7 @@ run docker compose down || true
 # Only build the images this role actually needs.
 if [ "$OPENMONO_ROLE" != "agent" ]; then
     info "Building llama-server image..."
-    if [ "${HAS_GPU:-false}" = true ]; then
+    if [ "${GPU_MODE:-0}" = "1" ]; then
         if ! run docker compose build --no-cache llama-server; then
             die "llama-server build failed"
         fi
@@ -611,27 +611,10 @@ fi  # End of Step 8 (skipped on agent role)
 # IMPORTANT: we use a PATH entry (not an alias) because an alias would shadow
 # all subcommands with a single fixed invocation.
 
-for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
-    if [ -f "$rc" ]; then
-        # Clean up any prior OpenMono block, including legacy alias forms.
-        if grep -q "# OpenMono.ai" "$rc"; then
-            # Remove from "# OpenMono.ai" up to the next blank line
-            sed -i '/# OpenMono.ai/,/^$/d' "$rc"
-        fi
-        # Also strip any stale top-level `alias openmono=` line from older installs
-        sed -i '/^alias openmono=/d' "$rc"
+# Shell rc file updates are handled by openmono cmd_setup after installation completes
+# This ensures we only update the appropriate files for the user's actual shell
 
-        {
-            echo ""
-            echo "# OpenMono.ai"
-            echo "export LLAMA_PORT=${LLAMA_PORT:-7474}"
-            echo "export PATH=\"$INSTALL_DIR:\$PATH\""
-        } >> "$rc"
-        detail "PATH updated in $(basename "$rc")"
-    fi
-done
-
-# Also install a symlink to /usr/local/bin when possible so the CLI is
+# Install a symlink to /usr/local/bin when possible so the CLI is
 # immediately available (no shell reload needed). Soft-fail if not writable.
 if [ -w /usr/local/bin ] || [ -n "${SUDO:-}" ]; then
     if [ -w /usr/local/bin ]; then
@@ -643,51 +626,21 @@ if [ -w /usr/local/bin ] || [ -n "${SUDO:-}" ]; then
     fi
 fi
 
-# ── Done ──────────────────────────────────────────────────────────────────────
+# Installation completed successfully — clear persisted setup choices so a
+# future `openmono setup` run starts fresh rather than restoring stale prefs.
+clear_setup_prefs
 
-echo ""
-printf "${GREEN}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
-printf "${GREEN}${BOLD}  Installation Complete${NC} (role: %s)\n" "$OPENMONO_ROLE"
-printf "${GREEN}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
-echo ""
-
-case "$OPENMONO_ROLE" in
-    full)
-        echo "  llama-server port : ${LLAMA_PORT:-7474}"
-        echo "  model             : ${MODEL_FILE:-n/a}"
-        echo "  mode              : $([ "${HAS_GPU:-false}" = true ] && echo GPU || echo CPU)"
-        echo ""
-        echo "Next steps:"
-        echo "  1. source ~/.bashrc        # Reload shell"
-        echo "  2. cd your-project/"
-        echo "  3. openmono agent          # Start the coding agent"
-        ;;
-    inference)
-        echo "  llama-server port : ${LLAMA_PORT:-7474}"
-        echo "  model             : ${MODEL_FILE:-n/a}"
-        echo "  mode              : $([ "${HAS_GPU:-false}" = true ] && echo GPU || echo CPU)"
-        echo ""
-        echo "This machine is now the inference server. To make it reachable"
-        echo "from an agent box over the internet, connect it to a relay server."
-        echo "Need a relay? Sign up for FREE at https://app.openmonoagent.ai to get started!"
-        echo ""
-        echo "Already have your token? Run the following to set up the tunnel:"
-        echo "  openmono tunnel setup"
-        echo ""
-        ;;
-    agent)
-        echo "  agent binary : built in Docker (openmono-agent image)"
-        echo ""
-        echo "Next steps:"
-        echo "  1. source ~/.bashrc        # Reload shell"
-        echo "  2. Point this agent at your inference server:"
-        echo "     Get the commands from the inference server setup instructions."
-        echo "     Example:"
-        echo "        openmono config set llm.endpoint http://<server>:<port>"
-        echo "        openmono config set llm.api_key  <token>"
-        echo "  3. cd your-project/ && openmono agent"
-        echo ""        
-        ;;
-esac
-echo ""
-show_log_location
+# Write environment to the file passed by openmono cmd_setup
+if [[ -n "${OPENMONO_ENV_FILE:-}" ]]; then
+    cat > "$OPENMONO_ENV_FILE" <<ENVEOF
+export INSTALL_DIR="$INSTALL_DIR"
+export LLAMA_PORT="${LLAMA_PORT:-7474}"
+export GPU_MODE="${GPU_MODE:-0}"
+export OPENMONO_ROLE="$OPENMONO_ROLE"
+export MODEL_NAME="${MODEL_NAME:-}"
+export MODEL_ACCURACY="${MODEL_ACCURACY:-standard}"
+ENVEOF
+    _log "Wrote install environment to: $OPENMONO_ENV_FILE"
+else
+    warn "OPENMONO_ENV_FILE not set (openmono cmd_setup should have set this)"
+fi

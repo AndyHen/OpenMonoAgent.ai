@@ -109,12 +109,13 @@ cmd_help() {
     printf "  %-14s %s\n" "status"  "Show container + GPU + model status"
     echo ""
     echo "Inference box (frpc tunnel to the relay — dual-box only):"
-    printf "  %-14s %s\n" "tunnel setup"   "Install frpc + systemd unit (prompts for relay signup values)"
-    printf "  %-14s %s\n" "tunnel start"   "Start the frpc tunnel"
-    printf "  %-14s %s\n" "tunnel stop"    "Stop the frpc tunnel"
-    printf "  %-14s %s\n" "tunnel restart" "Restart the frpc tunnel"
-    printf "  %-14s %s\n" "tunnel status"  "Show tunnel state + configured target"
-    printf "  %-14s %s\n" "tunnel logs"    "Tail frpc logs (journalctl -u frpc)"
+    printf "  %-14s %s\n" "tunnel setup"      "Install frpc + systemd unit (prompts for relay signup values)"
+    printf "  %-14s %s\n" "tunnel rotate-key" "Rotate LLAMA_API_KEY and restart llama-server"
+    printf "  %-14s %s\n" "tunnel start"      "Start the frpc tunnel"
+    printf "  %-14s %s\n" "tunnel stop"       "Stop the frpc tunnel"
+    printf "  %-14s %s\n" "tunnel restart"    "Restart the frpc tunnel"
+    printf "  %-14s %s\n" "tunnel status"     "Show tunnel state + configured target"
+    printf "  %-14s %s\n" "tunnel logs"       "Tail frpc logs (journalctl -u frpc)"
     echo ""
     echo "Global flags:"
     printf "  %-14s %s\n" "--verbose, -v" "Enable verbose/debug output (forwarded to the agent)"
@@ -168,8 +169,6 @@ cmd_setup() {
                 echo "A full log is written to ~/.openmono/logs/setup-<timestamp>.log"
                 echo ""
                 echo "Dual-box flow:"                
-                echo "  Sign up:       Visit https://app.openmonoagent.ai and sign up for a"
-                echo "                 FREE relay connection endpoint and api key."
                 echo "  Inference box: openmono setup --inference"
                 echo "                 openmono start"
                 echo "                 openmono tunnel setup"
@@ -182,29 +181,13 @@ cmd_setup() {
         esac
     done
 
+    # Source shared logging helpers for role_prompt function
+    _REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    # shellcheck source=scripts/lib/log.sh
+    source "$_REPO_DIR/scripts/lib/log.sh"
+
     # Interactive role prompt when no --full/--inference/--agent flag was given
-    if [[ -z "${OPENMONO_ROLE:-}" ]]; then
-        echo ""
-        echo "  What do you want to install on this machine?"
-        echo ""
-        echo "  1) Both — agent + inference server on one box (single-box mode)"
-        echo "  2) Inference server only — GPU box that runs the model"
-        echo "             (pair with a separate agent box via openmono tunnel)"
-        echo "  3) Agent only — laptop/workstation that talks to a remote inference server"
-        echo "             (dual-box mode; point at inference box with openmono config)"
-        echo ""
-        while true; do
-            printf "  Enter 1, 2 or 3: "
-            read -r _role_choice
-            case "$_role_choice" in
-                1) export OPENMONO_ROLE=full      ; break ;;
-                2) export OPENMONO_ROLE=inference ; break ;;
-                3) export OPENMONO_ROLE=agent     ; break ;;
-                *) echo "  Please enter 1, 2, or 3." ;;
-            esac
-        done
-        echo ""
-    fi
+    role_prompt
 
     # Share one log file across both scripts
     export OPENMONO_LOG_DIR="${OPENMONO_LOG_DIR:-$HOME/.openmono/logs}"
@@ -222,6 +205,12 @@ cmd_setup() {
         Linux)
             _PREREQS_SCRIPT="$REPO_DIR/scripts/install_prereqs.sh"
             _INSTALL_SCRIPT="$REPO_DIR/scripts/install.sh"
+            # On Linux: if docker group membership is available but not active,
+            # re-exec ourselves with sg docker so the entire setup runs with
+            # the group active. This ensures docker is accessible after setup.
+            if command -v docker &>/dev/null && ! docker info &>/dev/null 2>&1 && id -nG 2>/dev/null | grep -qw docker; then
+                exec sg docker "$0" setup "$@"
+            fi
             ;;
         *)
             err "Unsupported OS: $_OS (supported: Linux, macOS/Darwin)"
@@ -229,30 +218,187 @@ cmd_setup() {
             ;;
     esac
 
-    bash "$_PREREQS_SCRIPT" || {
+    # Set env file before prereqs so both scripts can write to it
+    export OPENMONO_ENV_FILE="$HOME/.openmono/.tmp_install_env"
+    mkdir -p "$(dirname "$OPENMONO_ENV_FILE")"
+    : > "$OPENMONO_ENV_FILE"  # clear any previous run
+
+    bash "$_PREREQS_SCRIPT" 2>> "$OPENMONO_LOG_FILE" || {
+        echo ""
+        show_log_tail 30
         err "Prerequisite install failed. Full log: $OPENMONO_LOG_FILE"
         exit 1
     }
-    bash "$_INSTALL_SCRIPT" || {
+
+    # Propagate GPU_MODE chosen in install_prereqs.sh to install.sh.
+    # Child processes can't modify the parent environment, so prereqs writes the
+    # choice to a temp file; we read it here before launching install.sh.
+    if [[ -z "${OPENMONO_GPU:-}" && -f "$HOME/.openmono/.tmp_gpu_mode" ]]; then
+        _gpu_val=$(grep '^GPU_MODE=' "$HOME/.openmono/.tmp_gpu_mode" | cut -d= -f2 | tr -d '[:space:]')
+        [[ "$_gpu_val" == "1" ]] && export OPENMONO_GPU=1 || export OPENMONO_GPU=0
+        rm -f "$HOME/.openmono/.tmp_gpu_mode"
+    fi
+
+    # install_prereqs.sh may have just added the user to the docker group.
+    # The current shell won't see that membership until a new session starts.
+    # Re-exec the whole openmono setup under sg docker so install.sh runs
+    # with docker access — otherwise docker commands in install.sh will fail.
+    if [[ "$_OS" == "Linux" ]] && command -v docker &>/dev/null && ! docker info &>/dev/null 2>&1; then
+        if getent group docker 2>/dev/null | grep -qw "$USER"; then
+            if command -v sg &>/dev/null && sg docker -c "docker info" &>/dev/null 2>&1; then
+                info "Re-launching with docker group active..."
+                _reexec_cmd="$(printf '%q' "$0") setup"
+                for _a in "$@"; do _reexec_cmd+=" $(printf '%q' "$_a")"; done
+                exec sg docker -c "$_reexec_cmd"
+            else
+                err "User '$USER' was added to the docker group but activation failed."
+                err "Run ONE of the following to activate the docker group:"
+                err "  1. newgrp docker"
+                err "  2. exec su -l \$USER"
+                err "  3. Log out and back in"
+                err "Then resume installation with:  $REPO_DIR/openmono setup"
+                exit 1
+            fi
+        fi
+    fi
+
+    bash "$_INSTALL_SCRIPT" 2>> "$OPENMONO_LOG_FILE" || {
+        echo ""
+        show_log_tail 30
         err "Installation failed. Full log: $OPENMONO_LOG_FILE"
         exit 1
     }
 
-    # Print setup complete message
+    # Source env written by install.sh before printing the completion banner
+    # (needed for LLAMA_PORT, GPU_MODE, INSTALL_DIR, OPENMONO_ROLE)
+    if [[ -n "${OPENMONO_ENV_FILE:-}" ]] && [[ -f "$OPENMONO_ENV_FILE" ]]; then
+        # shellcheck source=/dev/null
+        source "$OPENMONO_ENV_FILE"
+    fi
+
+    # Fallback values if not set
+    INSTALL_DIR="${INSTALL_DIR:-$HOME/openmono.ai}"
+    LLAMA_PORT="${LLAMA_PORT:-7474}"
+
+    # Print role-specific setup complete message
     echo ""
     printf "${BLUE}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
-    printf "${BLUE}${BOLD}  Setup Complete${NC}\n"
+    printf "${BLUE}${BOLD}  Setup Complete${NC} (role: %s)\n" "$OPENMONO_ROLE"
     printf "${BLUE}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
     echo ""
     echo -e "  ${GREEN}✓${NC} OpenMono.ai is ready to use!"
     echo ""
-    echo "  You can run now:"
-    echo -e "    ${BOLD}openmono agent${NC}                 # Run the agent"
-    echo -e "    ${BOLD}openmono config${NC}               # Configure settings"
-    echo -e "    ${BOLD}openmono --help${NC}               # Show all commands"
+
+    case "$OPENMONO_ROLE" in
+        full|inference)
+            echo "  llama-server port : ${LLAMA_PORT}"
+            echo "  mode              : $([ "${GPU_MODE:-0}" = "1" ] && echo GPU || echo CPU)"
+            echo ""
+            ;;
+    esac
+
+    case "$OPENMONO_ROLE" in
+        full)
+            echo "  Your machine is configured for single-box mode (agent + inference)."
+            echo ""
+            echo "  Next steps:"
+            echo -e "    1. ${BOLD}cd your-project/${NC}"
+            echo -e "    2. ${BOLD}openmono agent${NC}                 # Start the agent"
+            echo ""
+            echo "  Other commands:"
+            echo -e "    ${BOLD}openmono status${NC}              # Show llama-server status"
+            echo -e "    ${BOLD}openmono config${NC}             # Configure settings"
+            echo ""
+            ;;
+        inference)
+            echo "  Your machine is configured as the inference server."
+            echo ""
+            echo "  Next steps:"
+            echo -e "    1. ${BOLD}openmono tunnel setup${NC}       # Connect to openmonoagent.ai relay"
+            echo -e "    2. Use the endpoint + API key from step 1 on your agent box"
+            echo ""
+            echo "  Other commands:"
+            echo -e "    ${BOLD}openmono start${NC}              # Start llama-server"
+            echo -e "    ${BOLD}openmono status${NC}             # Show server status"
+            echo -e "    ${BOLD}openmono logs${NC}               # Tail server logs"
+            echo ""
+            ;;
+        agent)
+            echo "  Your machine is configured as the agent (dual-box mode)."
+            echo ""
+            echo "  ${BOLD}⚠ Important: You must configure the remote inference server first.${NC}"
+            echo ""
+            echo "  If the inference server is on a remote machine, run these commands NOW:"
+            echo ""
+            echo -e "    ${BOLD}openmono config set llm.endpoint http://<server-ip>:<port>${NC}"
+            echo -e "    ${BOLD}openmono config set llm.api_key <your-api-key>${NC}"
+            echo ""
+            echo "  Example (replace with your actual relay address from openmonoagent.ai):"
+            echo -e "    ${BOLD}openmono config set llm.endpoint http://relay.openmonoagent.ai:17474${NC}"
+            echo -e "    ${BOLD}openmono config set llm.api_key abc123def456${NC}"
+            echo ""
+            echo "  Then run the agent:"
+            echo -e "    ${BOLD}cd your-project/${NC}"
+            echo -e "    ${BOLD}openmono agent${NC}"
+            echo ""
+            echo "  Check config with:"
+            echo -e "    ${BOLD}openmono config${NC}"
+            echo ""
+            ;;
+    esac
+
+    echo "  Troubleshooting:"
+    echo "    If openmono or docker are not found, reload your shell:"
+    if [ "$_OS" = "Linux" ]; then
+        echo -e "      ${BOLD}newgrp docker${NC}     # Activate docker group (Linux only)"
+    fi
+    echo -e "      ${BOLD}source ~/.bashrc${NC}  # Reload shell config (bash)"
+    echo -e "      ${BOLD}exec \$SHELL${NC}       # Reload shell"
     echo ""
+    echo "  Full help: openmono --help"
     printf "${BLUE}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
     echo ""
+    show_log_location
+
+    # Update shell rc files to add openmono to PATH
+    info "Updating shell configuration..."
+    while IFS= read -r rc_file; do
+        if [[ -f "$rc_file" ]]; then
+            # Remove any existing OpenMono block
+            if grep -q "# OpenMono.ai" "$rc_file" 2>/dev/null; then
+                sed -i.bak '/# OpenMono.ai/,/^$/d' "$rc_file"
+                rm -f "$rc_file.bak"
+            fi
+            # Add OpenMono PATH
+            {
+                echo ""
+                echo "# OpenMono.ai"
+                echo "export PATH=\"$INSTALL_DIR:\$PATH\""
+            } >> "$rc_file"
+            detail "Updated $(basename "$rc_file")"
+        fi
+    done < <(get_shell_rc_files)
+
+    # Initialize settings.json with defaults if it doesn't exist
+    local settings_dir="$HOME/.openmono"
+    local settings_file="$settings_dir/settings.json"
+    mkdir -p "$settings_dir"
+    if [[ ! -f "$settings_file" ]]; then
+        cat > "$settings_file" <<'EOF'
+{
+  "llm": {
+    "endpoint": "http://localhost:7474",
+    "api_key": ""
+  }
+}
+EOF
+        detail "Created $settings_file with defaults"
+    fi
+
+    # Restart the shell with updated PATH so openmono and docker are immediately available
+    # The docker group is already active in this process, and exec preserves it
+    export PATH="$INSTALL_DIR:$PATH"
+    exec "$SHELL"
 }
 
 cmd_start() {
@@ -320,6 +466,13 @@ cmd_agent() {
     cd "$DOCKER_DIR"
     export LLAMA_PORT
 
+    # Load the role written by install.sh so we know if this is an agent-only box.
+    local install_env="$HOME/.openmono/.tmp_install_env"
+    if [[ -f "$install_env" && -z "${OPENMONO_ROLE:-}" ]]; then
+        # shellcheck source=/dev/null
+        source "$install_env"
+    fi
+
     # Read llm.endpoint / llm.api_key from settings so docker-compose uses the
     # configured tunnel instead of the default local llama-server.
     local settings="$HOME/.openmono/settings.json"
@@ -327,18 +480,35 @@ cmd_agent() {
         local cfg_endpoint cfg_key
         cfg_endpoint=$(jq -r '.llm.endpoint // empty' "$settings")
         cfg_key=$(jq -r '.llm.api_key // empty' "$settings")
-        [[ -n "$cfg_endpoint" ]] && export OPENMONO_ENDPOINT="$cfg_endpoint"
+        # Don't override OPENMONO_ENDPOINT with a localhost address — inside the
+        # container network the llama-server service is only reachable by its
+        # service name.  docker-compose already defaults to http://llama-server:7474;
+        # exporting localhost would shadow that with an address the container can't reach.
+        if [[ -n "$cfg_endpoint" ]] && \
+           [[ "$cfg_endpoint" != "http://localhost:${LLAMA_PORT}" ]] && \
+           [[ "$cfg_endpoint" != "http://localhost:7474" ]]; then
+            export OPENMONO_ENDPOINT="$cfg_endpoint"
+        fi
         [[ -n "$cfg_key" ]] && export OPENMONO_API_KEY="$cfg_key"
     fi
 
     # If the endpoint is local (no remote configured), make sure llama-server is
     # up and healthy before starting the agent. Skip this entirely for remote/tunnel
     # endpoints — the agent connects outbound and doesn't need a local server.
+    # Also skip on agent-only installs with no endpoint configured: the user must
+    # point at a remote inference server first.
     local effective_endpoint="${OPENMONO_ENDPOINT:-http://llama-server:7474}"
     local local_health="http://localhost:${LLAMA_PORT}/health"
     if [[ "$effective_endpoint" == "http://llama-server:7474" || \
           "$effective_endpoint" == "http://localhost:${LLAMA_PORT}" || \
           "$effective_endpoint" == "http://localhost:7474" ]]; then
+        if [[ "${OPENMONO_ROLE:-}" == "agent" ]]; then
+            warn "No remote inference endpoint configured for agent-only install."
+            warn "Set one before running the agent:"
+            warn "  openmono config set llm.endpoint http://<server-ip>:<port>"
+            warn "  openmono config set llm.api_key  <your-api-key>"
+            exit 1
+        fi
         if ! curl -sf "$local_health" &>/dev/null; then
             info "llama-server not running — starting it now..."
             docker compose up -d llama-server
@@ -667,6 +837,63 @@ cmd_tunnel() {
             tunnel_require_systemd
             sudo journalctl -u frpc -f
             ;;
+        rotate-key)
+            local env_file="$REPO_DIR/docker/.env"
+            local relay_cache="$HOME/.openmono/relay.json"
+
+            if [[ ! -f "$env_file" ]]; then
+                err "docker/.env not found. Run 'openmono tunnel setup' first."
+                return 1
+            fi
+
+            local new_key
+            new_key="$(openssl rand -hex 24)"
+
+            # Write new key to docker/.env
+            local tmp
+            tmp="$(mktemp)"
+            grep -v '^LLAMA_API_KEY=' "$env_file" > "$tmp" || true
+            echo "LLAMA_API_KEY=$new_key" >> "$tmp"
+            mv "$tmp" "$env_file"
+            chmod 0600 "$env_file"
+            ok "LLAMA_API_KEY rotated in docker/.env"
+
+            # Restart llama-server to enforce the new key immediately
+            if command -v docker &>/dev/null && docker compose version &>/dev/null 2>&1; then
+                if (cd "$REPO_DIR/docker" && docker compose ps --services 2>/dev/null | grep -q '^llama-server$'); then
+                    info "Restarting llama-server with new API key..."
+                    (cd "$REPO_DIR/docker" && docker compose restart llama-server) || \
+                        warn "Restart failed — run manually: cd docker && docker compose restart llama-server"
+                    ok "llama-server restarted"
+                else
+                    warn "llama-server is not running — start it with: openmono start"
+                fi
+            else
+                warn "docker compose not found — restart llama-server manually to enforce the new key"
+            fi
+
+            # Read endpoint from relay cache for convenience
+            local endpoint=""
+            if [[ -f "$relay_cache" ]]; then
+                local frps_addr remote_port
+                frps_addr="$(jq -r '.frpsAddress // empty' "$relay_cache" 2>/dev/null)"
+                remote_port="$(jq -r '.remotePort // empty' "$relay_cache" 2>/dev/null)"
+                [[ -n "$frps_addr" && -n "$remote_port" ]] && \
+                    endpoint="http://$frps_addr:$remote_port"
+            fi
+
+            echo ""
+            printf "${BLUE}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
+            printf "${BLUE}${BOLD}  API Key Rotated${NC}\n"
+            printf "${BLUE}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
+            echo ""
+            echo "  Run the following on the agent box to apply the new key:"
+            echo ""
+            [[ -n "$endpoint" ]] && \
+                printf "    ${BOLD}openmono config set llm.endpoint  %s${NC}\n" "$endpoint"
+            printf "    ${BOLD}openmono config set llm.api_key   %s${NC}\n" "$new_key"
+            echo ""
+            ;;
         help|--help|-h|"")
             echo "Usage: openmono tunnel <subcommand>"
             echo ""
@@ -675,8 +902,11 @@ cmd_tunnel() {
             echo ""
             echo "  setup       Install frpc + systemd unit; prompts for your relay"
             echo "              signup values (frpsAddress, relayToken, remotePort,"
-            echo "              proxyPrefix). Also generates a fresh LLAMA_API_KEY"
-            echo "              and restarts llama-server so it picks it up."
+            echo "              proxyPrefix). Preserves existing LLAMA_API_KEY."
+            echo "  rotate-key  Generate a new LLAMA_API_KEY, write it to docker/.env,"
+            echo "              and restart llama-server. Use when credentials are"
+            echo "              compromised. Prints the config set commands for the"
+            echo "              agent box."
             echo "  start       systemctl start frpc"
             echo "  stop        systemctl stop frpc"
             echo "  restart     systemctl restart frpc"

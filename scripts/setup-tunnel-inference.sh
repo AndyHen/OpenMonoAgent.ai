@@ -158,9 +158,18 @@ if ! [[ "$REMOTE_PORT" =~ ^[0-9]+$ ]]; then
     exit 1
 fi
 
-# ── Generate a fresh API key for llama-server ────────────────────────
+# ── Reuse existing API key, or generate one if absent ────────────────
 
-LLAMA_API_KEY="$(openssl rand -hex 24)"
+LLAMA_API_KEY=""
+if [[ -f "$ENV_FILE" ]]; then
+    LLAMA_API_KEY="$(grep '^LLAMA_API_KEY=' "$ENV_FILE" | cut -d= -f2- | tr -d '[:space:]')"
+fi
+if [[ -z "$LLAMA_API_KEY" ]]; then
+    LLAMA_API_KEY="$(openssl rand -hex 24)"
+    info "Generated new LLAMA_API_KEY"
+else
+    info "Reusing existing LLAMA_API_KEY from $ENV_FILE"
+fi
 
 # ── Detect architecture ──────────────────────────────────────────────
 
