@@ -166,6 +166,24 @@ public sealed class ConversationLoop : IDisposable
 
             var contextWindow = _checkpointer.BuildContextWindow(_session);
 
+            if (!thinking && _config.Llm.Model.Contains("qwen", StringComparison.OrdinalIgnoreCase))
+            {
+                for (var j = contextWindow.Count - 1; j >= 0; j--)
+                {
+                    if (contextWindow[j].Role == MessageRole.User
+                        && contextWindow[j].Content is { } content
+                        && !content.Contains("/no_think"))
+                    {
+                        contextWindow[j] = new Message
+                        {
+                            Role = MessageRole.User,
+                            Content = content + " /no_think",
+                        };
+                        break;
+                    }
+                }
+            }
+
             var textBuffer = new StringBuilder();
             var toolCalls = new List<ToolCall>();
             var receivedFirstChunk = false;
@@ -174,6 +192,7 @@ public sealed class ConversationLoop : IDisposable
             var thinkingChars = 0;
             var indicatorShown = false;
             var turnTokens = 0;
+            var wasTruncated = false;
 
             var context = BuildToolContext();
             var inFlightTasks = new Dictionary<string, Task<ToolResult>>();
@@ -242,7 +261,10 @@ public sealed class ConversationLoop : IDisposable
                 }
 
                 if (chunk.IsComplete)
+                {
+                    wasTruncated = chunk.WasTruncated;
                     break;
+                }
             }
 
             if (thinkingStarted && !thinkingCollapsed)
@@ -258,8 +280,22 @@ public sealed class ConversationLoop : IDisposable
             };
             _session.AddMessage(assistantMsg);
 
+            _output.WriteDebug($"[Turn] toolCalls={toolCalls.Count} wasTruncated={wasTruncated} thinkingTokens={thinkingChars} textLen={textBuffer.Length}");
+
             if (toolCalls.Count == 0)
             {
+                if (wasTruncated)
+                {
+                    _output.WriteWarning("Response was truncated (max_tokens reached). Continuing...");
+                    _session.AddMessage(new Message
+                    {
+                        Role = MessageRole.User,
+                        Content = "[System: Your previous response was truncated because it hit the max output token limit. Continue where you left off. Do NOT repeat what you already said — proceed directly with the next action or tool call.]",
+                    });
+                    continue;
+                }
+
+                _output.WriteDebug("[Turn] Exiting: text_only response, no truncation detected");
                 _journal.FinishTurn("text_only");
                 return;
             }
@@ -774,4 +810,5 @@ public sealed class ConversationLoop : IDisposable
         FileHistory = _session.Meta.FileHistory,
         Cursors = _cursorStore,
     };
+
 }

@@ -135,6 +135,10 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
             var malformedChunks = 0;
             var fullText = new StringBuilder();
             var suppressText = false;
+            var wasTruncated = false;
+            var inThinkTag = false;
+            var thinkBuffer = new StringBuilder();
+            var loggedThinkingSource = false;
 
             string? line;
             while ((line = await reader.ReadLineAsync(ct)) is not null)
@@ -190,7 +194,7 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                         }
                     }
 
-                    yield return new StreamChunk { IsComplete = true };
+                    yield return new StreamChunk { IsComplete = true, WasTruncated = wasTruncated };
                     yield break;
                 }
 
@@ -246,7 +250,15 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                         {
                             var thinking = reasoningEl.GetString();
                             if (!string.IsNullOrEmpty(thinking))
+                            {
+                                if (!loggedThinkingSource)
+                                {
+                                    OnDebug?.Invoke("[SSE] Thinking via reasoning_content field");
+                                    Log.Debug("SSE: thinking source=reasoning_content");
+                                    loggedThinkingSource = true;
+                                }
                                 yield return new StreamChunk { ThinkingDelta = thinking };
+                            }
                         }
 
                         if (delta.TryGetProperty("content", out var contentEl) &&
@@ -256,12 +268,61 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                             if (!string.IsNullOrEmpty(text))
                             {
                                 fullText.Append(text);
-                                if (!suppressText)
+
+                                var remaining = text;
+                                while (remaining.Length > 0)
                                 {
-                                    if (fullText.ToString().Contains("<function="))
-                                        suppressText = true;
+                                    if (inThinkTag)
+                                    {
+                                        var closeIdx = remaining.IndexOf("</think>", StringComparison.Ordinal);
+                                        if (closeIdx >= 0)
+                                        {
+                                            thinkBuffer.Append(remaining[..closeIdx]);
+                                            yield return new StreamChunk { ThinkingDelta = thinkBuffer.ToString() };
+                                            thinkBuffer.Clear();
+                                            inThinkTag = false;
+                                            remaining = remaining[(closeIdx + "</think>".Length)..];
+                                        }
+                                        else
+                                        {
+                                            thinkBuffer.Append(remaining);
+                                            remaining = "";
+                                        }
+                                    }
                                     else
-                                        yield return new StreamChunk { TextDelta = text, Usage = usage };
+                                    {
+                                        var openIdx = remaining.IndexOf("<think>", StringComparison.Ordinal);
+                                        if (openIdx >= 0)
+                                        {
+                                            if (!loggedThinkingSource)
+                                            {
+                                                OnDebug?.Invoke("[SSE] Thinking via <think> tag in content");
+                                                Log.Debug("SSE: thinking source=think_tag_in_content");
+                                                loggedThinkingSource = true;
+                                            }
+                                            var before = remaining[..openIdx];
+                                            if (before.Length > 0 && !suppressText)
+                                            {
+                                                if (fullText.ToString().Contains("<function="))
+                                                    suppressText = true;
+                                                else
+                                                    yield return new StreamChunk { TextDelta = before, Usage = usage };
+                                            }
+                                            inThinkTag = true;
+                                            remaining = remaining[(openIdx + "<think>".Length)..];
+                                        }
+                                        else
+                                        {
+                                            if (!suppressText)
+                                            {
+                                                if (fullText.ToString().Contains("<function="))
+                                                    suppressText = true;
+                                                else
+                                                    yield return new StreamChunk { TextDelta = remaining, Usage = usage };
+                                            }
+                                            remaining = "";
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -295,10 +356,17 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
                         if (choice.TryGetProperty("finish_reason", out var fr) &&
                             fr.ValueKind == JsonValueKind.String)
                         {
-                            if (fr.GetString() == "tool_calls")
+                            var reason = fr.GetString();
+                            OnDebug?.Invoke($"[SSE] finish_reason={reason} | toolCalls={toolCalls.Count} | textLen={fullText.Length}");
+                            Log.Debug($"SSE finish_reason={reason} toolCalls={toolCalls.Count} textLen={fullText.Length}");
+                            if (reason == "tool_calls")
                             {
                                 foreach (var tc in toolCalls.Values)
                                     tc.IsComplete = true;
+                            }
+                            else if (reason == "length")
+                            {
+                                wasTruncated = true;
                             }
                         }
                     }
@@ -356,15 +424,16 @@ public sealed class OpenAiCompatClient : ILlmClient, IDisposable
             ["messages"] = apiMessages,
             ["temperature"] = options.Temperature,
             ["max_tokens"] = options.MaxTokens,
-            ["top_p"] = options.TopP,
-            ["top_k"] = options.TopK,
-            ["presence_penalty"] = options.PresencePenalty,
-            ["min_p"] = options.MinP,
-            ["repetition_penalty"] = options.RepetitionPenalty,
             ["stream"] = true,
             ["stream_options"] = new { include_usage = true },
             ["cache_prompt"] = true,
         };
+
+        if (options.TopP is not 1.0) body["top_p"] = options.TopP;
+        if (options.TopK > 0) body["top_k"] = options.TopK;
+        if (options.PresencePenalty is not 0.0) body["presence_penalty"] = options.PresencePenalty;
+        if (options.MinP > 0.0) body["min_p"] = options.MinP;
+        if (options.RepetitionPenalty is not 1.0) body["repetition_penalty"] = options.RepetitionPenalty;
 
         if (options.EnableThinking.HasValue)
             body["chat_template_kwargs"] = new { enable_thinking = options.EnableThinking.Value };

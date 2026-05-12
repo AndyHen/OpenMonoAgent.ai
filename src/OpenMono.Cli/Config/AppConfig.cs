@@ -48,11 +48,11 @@ public class LlmConfig
     public string Model { get; set; } = "";
     public string? ApiKey { get; set; }
     public int ContextSize { get; set; } = 196608;
-    public int MaxOutputTokens { get; set; } = 16384;
+    public int MaxOutputTokens { get; set; } = 32768;
     public double Temperature { get; set; } = 0.7;
     public double TopP { get; set; } = 0.8;
     public int TopK { get; set; } = 20;
-    public double PresencePenalty { get; set; } = 1.5;
+    public double PresencePenalty { get; set; } = 0.0;
     public double MinP { get; set; } = 0.0;
     public double RepetitionPenalty { get; set; } = 1.0;
 

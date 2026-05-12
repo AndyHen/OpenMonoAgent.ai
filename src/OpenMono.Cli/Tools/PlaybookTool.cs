@@ -59,6 +59,12 @@ public sealed class PlaybookTool : ToolBase
         var result = new Dictionary<string, object>();
         if (string.IsNullOrWhiteSpace(args)) return result;
 
+        var requiredParams = playbook.Parameters
+            .Where(p => p.Value.Required)
+            .Select(p => p.Key)
+            .ToList();
+        var positionalIndex = 0;
+
         var parts = args.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         for (var i = 0; i < parts.Length; i++)
         {
@@ -72,14 +78,14 @@ public sealed class PlaybookTool : ToolBase
                 result[parts[i][2..]] = parts[i + 1];
                 i++;
             }
-            else if (!result.ContainsKey("_positional"))
+            else if (positionalIndex < requiredParams.Count)
             {
-
-                var firstParam = playbook.Parameters.FirstOrDefault(p => p.Value.Required);
-                if (firstParam.Key is not null)
-                    result[firstParam.Key] = parts[i];
-                else
-                    result["_positional"] = parts[i];
+                result[requiredParams[positionalIndex]] = parts[i];
+                positionalIndex++;
+            }
+            else
+            {
+                result["_positional"] = parts[i];
             }
         }
 
