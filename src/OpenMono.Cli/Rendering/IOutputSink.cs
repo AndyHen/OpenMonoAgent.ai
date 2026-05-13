@@ -8,7 +8,7 @@ public interface IOutputSink
 
     void StartAssistantResponse();
     void StreamText(string text);
-    void EndAssistantResponse(int tokens = 0);
+    void EndAssistantResponse(int tokens = 0, int contextTokens = 0);
 
     void AppendThinking(string text);
     void CollapseThinking(int charCount);

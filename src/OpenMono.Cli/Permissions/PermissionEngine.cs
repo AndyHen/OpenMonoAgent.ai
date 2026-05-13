@@ -189,17 +189,26 @@ public sealed class PermissionEngine
 
     private bool IsAutoAllowedCapability(Capability cap) => cap switch
     {
-
-        FileReadCap fr when fr.Path.StartsWith(_config.WorkingDirectory) => true,
-
-        FileWriteCap fw when fw.Path.StartsWith(_config.WorkingDirectory) => true,
-
+        FileReadCap fr when IsUnderWorkingDirectory(fr.Path) => true,
+        FileWriteCap fw when IsUnderWorkingDirectory(fw.Path) => true,
         MemoryCap mc when mc.Operation == "read" => true,
-
         ProcessExecCap pe when IsSafeReadOnlyCommand(pe) => true,
-
         _ => false
     };
+
+    private bool IsUnderWorkingDirectory(string path)
+    {
+        try
+        {
+            var resolved = Path.GetFullPath(path, _config.WorkingDirectory);
+            var rel = Path.GetRelativePath(_config.WorkingDirectory, resolved);
+            return !rel.StartsWith("..") && !Path.IsPathRooted(rel);
+        }
+        catch
+        {
+            return false;
+        }
+    }
 
     private static bool IsSafeReadOnlyCommand(ProcessExecCap cap)
     {

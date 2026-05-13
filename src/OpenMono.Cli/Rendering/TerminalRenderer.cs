@@ -199,7 +199,7 @@ private readonly System.Text.StringBuilder _streamBuffer = new();
         _streamBuffer.Append(text);
     }
 
-    public void EndAssistantResponse(int tokens = 0)
+    public void EndAssistantResponse(int tokens = 0, int contextTokens = 0)
     {
         ClearThinkingAnimation();
         if (_inAssistantResponse)
@@ -212,9 +212,11 @@ private readonly System.Text.StringBuilder _streamBuffer = new();
             Console.WriteLine();
 
             var elapsed = _streamStopwatch.Elapsed;
-            var tokSec = elapsed.TotalSeconds > 0 ? _streamTokenCount / elapsed.TotalSeconds : 0;
+            var tokenCount = tokens > 0 ? tokens : _streamTokenCount;
+            var tokSec = elapsed.TotalSeconds > 0 ? tokenCount / elapsed.TotalSeconds : 0;
             _console.MarkupLine($"  [dim green]─────────────────────────────────────────────────[/]");
-            _console.MarkupLine($"  [dim]{_streamTokenCount} chunks · {elapsed.TotalSeconds:F1}s · {tokSec:F0} tok/s[/]");
+            var ctxStr = contextTokens > 0 ? $" · ctx {contextTokens:N0}" : "";
+            _console.MarkupLine($"  [dim]{tokenCount} tokens · {elapsed.TotalSeconds:F1}s · {tokSec:F0} tok/s{ctxStr}[/]");
             _console.WriteLine();
 
             _streamBuffer.Clear();

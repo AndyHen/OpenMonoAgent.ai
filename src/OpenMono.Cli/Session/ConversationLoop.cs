@@ -187,6 +187,7 @@ public sealed class ConversationLoop : IDisposable
             var thinkingChars = 0;
             var indicatorShown = false;
             var turnTokens = 0;
+            var contextTokens = 0;
             var wasTruncated = false;
 
             var context = BuildToolContext();
@@ -253,6 +254,7 @@ public sealed class ConversationLoop : IDisposable
                     _session.TotalTokensUsed += chunk.Usage.TotalTokens;
                     _session.Meta.TokenTracker?.RecordUsage(chunk.Usage.PromptTokens, chunk.Usage.CompletionTokens);
                     turnTokens += chunk.Usage.TotalTokens;
+                    contextTokens = chunk.Usage.PromptTokens;
                 }
 
                 if (chunk.IsComplete)
@@ -265,7 +267,7 @@ public sealed class ConversationLoop : IDisposable
             if (thinkingStarted && !thinkingCollapsed)
                 _output.CollapseThinking(thinkingChars);
 
-            _output.EndAssistantResponse(turnTokens);
+            _output.EndAssistantResponse(turnTokens, contextTokens);
 
             var assistantMsg = new Message
             {
