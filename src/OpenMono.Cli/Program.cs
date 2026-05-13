@@ -13,6 +13,8 @@ using OpenMono.Session;
 using OpenMono.Tools;
 using OpenMono.Utils;
 
+Console.OutputEncoding = System.Text.Encoding.UTF8;
+
 string? endpoint = null, model = null, workdir = null, configPath = null;
 var verbose = false;
 var showDetail = false;

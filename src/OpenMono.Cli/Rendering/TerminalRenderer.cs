@@ -15,8 +15,7 @@ public sealed class TerminalRenderer : IRenderer
     private int _thinkingChars;
     private readonly Stopwatch _streamStopwatch = new();
     private int _streamTokenCount;
-    private bool _streamAtLineStart;
-    private readonly System.Text.StringBuilder _streamBuffer = new();
+private readonly System.Text.StringBuilder _streamBuffer = new();
 
     public bool Verbose { get; set; }
 
@@ -186,14 +185,11 @@ public sealed class TerminalRenderer : IRenderer
         _inAssistantResponse = true;
         _streamStopwatch.Restart();
         _streamTokenCount = 0;
-        _streamAtLineStart = true;
-
         Console.Write("\r\u001b[K");
         _console.MarkupLine("");
         _console.MarkupLine("  [bold green]◆ Assistant[/]");
         _console.MarkupLine("  [dim green]─────────────────────────────────────────────────[/]");
         _streamBuffer.Clear();
-        Console.Write("\x1b[s");
     }
 
     public void StreamText(string text)
@@ -201,20 +197,6 @@ public sealed class TerminalRenderer : IRenderer
         ClearThinkingAnimation();
         _streamTokenCount++;
         _streamBuffer.Append(text);
-
-        for (var i = 0; i < text.Length; i++)
-        {
-            if (_streamAtLineStart)
-            {
-                Console.Write("    ");
-                _streamAtLineStart = false;
-            }
-
-            Console.Write(text[i]);
-
-            if (text[i] == '\n')
-                _streamAtLineStart = true;
-        }
     }
 
     public void EndAssistantResponse(int tokens = 0)
@@ -224,7 +206,6 @@ public sealed class TerminalRenderer : IRenderer
         {
             _streamStopwatch.Stop();
 
-            Console.Write("\x1b[u\x1b[J");
             var width = Math.Max(40, Console.WindowWidth - 6);
             foreach (var line in AnsiMarkdown.Render(_streamBuffer.ToString(), width))
                 Console.WriteLine("    " + line);

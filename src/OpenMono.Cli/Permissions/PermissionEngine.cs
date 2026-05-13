@@ -192,6 +192,8 @@ public sealed class PermissionEngine
 
         FileReadCap fr when fr.Path.StartsWith(_config.WorkingDirectory) => true,
 
+        FileWriteCap fw when fw.Path.StartsWith(_config.WorkingDirectory) => true,
+
         MemoryCap mc when mc.Operation == "read" => true,
 
         ProcessExecCap pe when IsSafeReadOnlyCommand(pe) => true,
@@ -206,6 +208,8 @@ public sealed class PermissionEngine
             "ls", "cat", "head", "tail", "wc", "pwd", "whoami", "date", "echo",
             "which", "type", "file", "stat", "du", "df",
             "git status", "git log", "git diff", "git branch", "git show",
+            "git fetch", "git pull", "git remote", "git tag", "git describe",
+            "git rev-parse", "git rev-list", "git ls-files", "git shortlog",
             "npm list", "npm view", "yarn list",
             "dotnet --version", "node --version", "python --version"
         };

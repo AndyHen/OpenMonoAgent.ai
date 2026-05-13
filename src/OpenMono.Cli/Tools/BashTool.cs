@@ -62,6 +62,7 @@ public sealed class BashTool : ToolBase
         {
             "push" => new VcsMutationCap(".", "push"),
             "commit" => new VcsMutationCap(".", "commit"),
+            "add" => new VcsMutationCap(".", "add"),
             "merge" => new VcsMutationCap(".", "merge"),
             "rebase" => new VcsMutationCap(".", "rebase"),
             "reset" => new VcsMutationCap(".", "reset"),

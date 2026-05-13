@@ -50,21 +50,28 @@ public sealed class FileEditTool : ToolBase
         try
         {
             var content = await File.ReadAllTextAsync(resolvedPath, ct);
-            var occurrences = CountOccurrences(content, oldString);
 
-            if (occurrences == 0)
+            // Try exact match first, then progressively looser normalization.
+            var (workingContent, workingOld) = ResolveMatch(content, oldString);
+
+            if (workingContent is null)
                 return ToolResult.Error($"old_string not found in {resolvedPath}");
+
+            var occurrences = CountOccurrences(workingContent, workingOld!);
 
             if (occurrences > 1 && !replaceAll)
                 return ToolResult.Error(
                     $"old_string found {occurrences} times in {resolvedPath}. " +
                     "Provide more context to make it unique, or set replace_all=true.");
 
+            // Normalize new_string line endings to match the working content's style.
+            var normalizedNew = NormalizeLineEndings(newString, workingContent);
+
             string updated;
             if (replaceAll)
-                updated = content.Replace(oldString, newString);
+                updated = workingContent.Replace(workingOld!, normalizedNew);
             else
-                updated = ReplaceFirst(content, oldString, newString);
+                updated = ReplaceFirst(workingContent, workingOld!, normalizedNew);
 
             var secrets = SecretScanner.Scan(newString);
             var secretWarning = secrets.Count > 0
@@ -97,6 +104,56 @@ public sealed class FileEditTool : ToolBase
         {
             return ToolResult.Error($"Error editing file: {ex.Message}");
         }
+    }
+
+    // Returns (workingContent, workingOld) where the match is guaranteed to exist,
+    // or (null, null) if no normalization level finds a match.
+    private static (string? content, string? oldString) ResolveMatch(string content, string oldString)
+    {
+        // Tier 1: exact match
+        if (content.Contains(oldString, StringComparison.Ordinal))
+            return (content, oldString);
+
+        // Tier 2: normalize line endings — convert both to LF and search
+        var contentLf = content.Replace("\r\n", "\n");
+        var oldLf = oldString.Replace("\r\n", "\n");
+        if (contentLf.Contains(oldLf, StringComparison.Ordinal))
+            return (contentLf, oldLf);
+
+        // Tier 3: per-line whitespace normalization (handles tab/space indent drift)
+        var normalizedContent = NormalizeIndentation(content);
+        var normalizedOld = NormalizeIndentation(oldString);
+        if (normalizedContent.Contains(normalizedOld, StringComparison.Ordinal))
+            return (normalizedContent, normalizedOld);
+
+        return (null, null);
+    }
+
+    // Converts each line's leading whitespace to spaces (4 spaces per tab).
+    private static string NormalizeIndentation(string text)
+    {
+        var lines = text.Replace("\r\n", "\n").Split('\n');
+        for (var i = 0; i < lines.Length; i++)
+        {
+            var line = lines[i];
+            var j = 0;
+            while (j < line.Length && (line[j] == ' ' || line[j] == '\t'))
+                j++;
+            if (j > 0)
+            {
+                var indent = line[..j].Replace("\t", "    ");
+                lines[i] = indent + line[j..];
+            }
+        }
+        return string.Join('\n', lines);
+    }
+
+    // Matches line endings in value to the style used in target.
+    private static string NormalizeLineEndings(string value, string target)
+    {
+        var hasCrlf = target.Contains("\r\n");
+        var valueLf = value.Replace("\r\n", "\n");
+        return hasCrlf ? valueLf.Replace("\n", "\r\n") : valueLf;
     }
 
     private static string DiagnoseWriteFailure(string path)
