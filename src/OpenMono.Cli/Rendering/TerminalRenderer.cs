@@ -16,6 +16,7 @@ public sealed class TerminalRenderer : IRenderer
     private readonly Stopwatch _streamStopwatch = new();
     private int _streamTokenCount;
     private bool _streamAtLineStart;
+    private readonly System.Text.StringBuilder _streamBuffer = new();
 
     public bool Verbose { get; set; }
 
@@ -191,12 +192,15 @@ public sealed class TerminalRenderer : IRenderer
         _console.MarkupLine("");
         _console.MarkupLine("  [bold green]◆ Assistant[/]");
         _console.MarkupLine("  [dim green]─────────────────────────────────────────────────[/]");
+        _streamBuffer.Clear();
+        Console.Write("\x1b[s");
     }
 
     public void StreamText(string text)
     {
         ClearThinkingAnimation();
         _streamTokenCount++;
+        _streamBuffer.Append(text);
 
         for (var i = 0; i < text.Length; i++)
         {
@@ -219,6 +223,11 @@ public sealed class TerminalRenderer : IRenderer
         if (_inAssistantResponse)
         {
             _streamStopwatch.Stop();
+
+            Console.Write("\x1b[u\x1b[J");
+            var width = Math.Max(40, Console.WindowWidth - 6);
+            foreach (var line in AnsiMarkdown.Render(_streamBuffer.ToString(), width))
+                Console.WriteLine("    " + line);
             Console.WriteLine();
 
             var elapsed = _streamStopwatch.Elapsed;
@@ -226,13 +235,17 @@ public sealed class TerminalRenderer : IRenderer
             _console.MarkupLine($"  [dim green]─────────────────────────────────────────────────[/]");
             _console.MarkupLine($"  [dim]{_streamTokenCount} chunks · {elapsed.TotalSeconds:F1}s · {tokSec:F0} tok/s[/]");
             _console.WriteLine();
+
+            _streamBuffer.Clear();
         }
         _inAssistantResponse = false;
     }
 
     public void WriteMarkdown(string markdown)
     {
-        _console.WriteLine(markdown);
+        var width = Math.Max(40, Console.WindowWidth - 6);
+        foreach (var line in AnsiMarkdown.Render(markdown, width))
+            Console.WriteLine("    " + line);
     }
 
     public void WriteDebug(string message)
