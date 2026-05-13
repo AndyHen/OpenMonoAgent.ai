@@ -1,7 +1,9 @@
 using System.Diagnostics;
 using Spectre.Console;
 using OpenMono.Commands;
+using OpenMono.Config;
 using OpenMono.Permissions;
+using OpenMono.Session;
 
 namespace OpenMono.Rendering;
 
@@ -15,7 +17,10 @@ public sealed class TerminalRenderer : IRenderer
     private int _thinkingChars;
     private readonly Stopwatch _streamStopwatch = new();
     private int _streamTokenCount;
-private readonly System.Text.StringBuilder _streamBuffer = new();
+    private readonly System.Text.StringBuilder _streamBuffer = new();
+
+    private AppConfig? _config;
+    private TokenTracker? _tokenTracker;
 
     public bool Verbose { get; set; }
 
@@ -24,6 +29,12 @@ private readonly System.Text.StringBuilder _streamBuffer = new();
     public TerminalRenderer(IAnsiConsole? console = null)
     {
         _console = console ?? AnsiConsole.Console;
+    }
+
+    public void SetContextTracking(AppConfig config, TokenTracker tokenTracker)
+    {
+        _config = config;
+        _tokenTracker = tokenTracker;
     }
 
     public void EnableCommandSuggestions(CommandRegistry registry)
@@ -214,7 +225,15 @@ private readonly System.Text.StringBuilder _streamBuffer = new();
             var elapsed = _streamStopwatch.Elapsed;
             var tokSec = elapsed.TotalSeconds > 0 ? _streamTokenCount / elapsed.TotalSeconds : 0;
             _console.MarkupLine($"  [dim green]─────────────────────────────────────────────────[/]");
-            _console.MarkupLine($"  [dim]{_streamTokenCount} chunks · {elapsed.TotalSeconds:F1}s · {tokSec:F0} tok/s[/]");
+
+            var stats = $"  [dim]{_streamTokenCount} chunks · {elapsed.TotalSeconds:F1}s · {tokSec:F0} tok/s";
+            if (_tokenTracker is not null && _config is not null && _config.Llm.ContextSize > 0)
+            {
+                var pct = _tokenTracker.TotalTokens * 100 / _config.Llm.ContextSize;
+                stats += $" · context {pct}%";
+            }
+            stats += "[/]";
+            _console.MarkupLine(stats);
             _console.WriteLine();
 
             _streamBuffer.Clear();

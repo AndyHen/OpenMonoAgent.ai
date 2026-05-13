@@ -139,6 +139,10 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
     {
         tokenTracker.OnUsageUpdated = (_, _) => ansiTui.OnTokensUpdated();
     }
+    else if (renderer is TerminalRenderer terminalRenderer)
+    {
+        terminalRenderer.SetContextTracking(config, tokenTracker);
+    }
     var tools = new ToolRegistry();
     tools.Register(new FileReadTool());
     tools.Register(new FileWriteTool());
