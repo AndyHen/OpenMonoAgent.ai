@@ -134,6 +134,23 @@ public sealed class Compactor
     {
         var conversationText = BuildConversationText(messages);
 
+        // Leave ~40% of the context window for the system prompt, response, and overhead.
+        // Each char ≈ 0.25 tokens; budget chars = contextSize * 0.40 * 4.
+        var maxChars = _contextSize * 40 / 25; // contextSize * 1.6
+        if (conversationText.Length > maxChars)
+        {
+            // Always keep the first message (most relevant context) + recent tail.
+            var firstEnd = conversationText.IndexOf('\n', conversationText.IndexOf('\n') + 1);
+            var firstMessage = firstEnd >= 0 ? conversationText[..(firstEnd + 1)] : string.Empty;
+            var remaining = maxChars - firstMessage.Length;
+            var tail = conversationText[^remaining..];
+            var newline = tail.IndexOf('\n');
+            tail = newline >= 0 ? tail[(newline + 1)..] : tail;
+            conversationText = firstMessage +
+                               "\n[Middle messages truncated to fit context window]\n\n" +
+                               tail;
+        }
+
         var summaryMessages = new List<Message>
         {
             new() { Role = MessageRole.System, Content = SummaryPrompt.BuildPrompt(customInstructions) },

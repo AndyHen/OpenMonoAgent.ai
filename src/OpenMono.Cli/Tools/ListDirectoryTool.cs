@@ -16,7 +16,7 @@ public sealed class ListDirectoryTool : ToolBase
         .AddBoolean("recursive", "List recursively (default: false)")
         .AddInteger("max_entries", "Maximum entries to return (default: 200)");
 
-    public IReadOnlyList<Capability> RequiredCapabilities(JsonElement input)
+    public override IReadOnlyList<Capability> RequiredCapabilities(JsonElement input, string workingDirectory = "")
     {
         var dirPath = input.TryGetProperty("path", out var p) ? p.GetString() : ".";
         if (string.IsNullOrEmpty(dirPath))

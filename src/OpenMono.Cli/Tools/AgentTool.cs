@@ -20,7 +20,7 @@ public sealed class AgentTool : ToolBase
             "general-purpose", "Explore", "Plan", "Coder", "Verify")
         .Require("description", "prompt");
 
-    public IReadOnlyList<Capability> RequiredCapabilities(JsonElement input)
+    public override IReadOnlyList<Capability> RequiredCapabilities(JsonElement input, string workingDirectory = "")
     {
         var description = input.TryGetProperty("description", out var d) ? d.GetString() : "task";
         var agentType = input.TryGetProperty("agent_type", out var at) ? at.GetString() : "general-purpose";

@@ -24,5 +24,5 @@ public interface ITool
 
     PermissionLevel RequiredPermission(JsonElement input);
 
-    IReadOnlyList<Capability> RequiredCapabilities(JsonElement input) => [];
+    IReadOnlyList<Capability> RequiredCapabilities(JsonElement input, string workingDirectory = "") => [];
 }

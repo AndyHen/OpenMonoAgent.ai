@@ -26,7 +26,7 @@ public sealed class PlaybookTool : ToolBase
         .AddBoolean("resume", "Resume from last checkpoint (default: false)")
         .Require("name");
 
-    public IReadOnlyList<Capability> RequiredCapabilities(JsonElement input) => [];
+    public override IReadOnlyList<Capability> RequiredCapabilities(JsonElement input, string workingDirectory = "") => [];
 
     protected override async Task<ToolResult> ExecuteCoreAsync(JsonElement input, ToolContext context, CancellationToken ct)
     {

@@ -8,7 +8,7 @@ namespace OpenMono.Tools;
 public sealed class GlobTool : ToolBase
 {
     public override string Name => "Glob";
-    public override string Description => "Find files matching a glob pattern. Returns paths sorted by modification time.";
+    public override string Description => "Find files by name or glob pattern. Use this to locate files by filename or extension (e.g. **/*Controller.cs, src/**/*.json). Returns paths sorted by modification time. Prefer this over Grep when searching for a file by name.";
     public override bool IsConcurrencySafe => true;
     public override bool IsReadOnly => true;
     public override PermissionLevel DefaultPermission => PermissionLevel.AutoAllow;
@@ -18,7 +18,7 @@ public sealed class GlobTool : ToolBase
         .AddString("path", "Directory to search in (default: working directory)")
         .Require("pattern");
 
-    public IReadOnlyList<Capability> RequiredCapabilities(JsonElement input)
+    public override IReadOnlyList<Capability> RequiredCapabilities(JsonElement input, string workingDirectory = "")
     {
         var searchPath = input.TryGetProperty("path", out var p) ? p.GetString() : ".";
         if (string.IsNullOrEmpty(searchPath))

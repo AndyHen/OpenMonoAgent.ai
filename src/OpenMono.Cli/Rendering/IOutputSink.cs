@@ -6,7 +6,7 @@ public interface IOutputSink
 {
     bool Verbose { get; set; }
 
-    void StartAssistantResponse();
+    void StartAssistantResponse(TimeSpan prefillTime = default);
     void StreamText(string text);
     void EndAssistantResponse(int tokens = 0);
 

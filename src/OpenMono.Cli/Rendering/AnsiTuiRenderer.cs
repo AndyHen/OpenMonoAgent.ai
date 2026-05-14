@@ -80,7 +80,7 @@ public sealed class AnsiTuiRenderer : IRenderer
         set => _painter.Verbose = value;
     }
 
-    public void StartAssistantResponse()    => _painter.StartAssistantResponse();
+    public void StartAssistantResponse(TimeSpan prefillTime = default) => _painter.StartAssistantResponse();
     public void StreamText(string text)     => _painter.StreamText(text);
     public void EndAssistantResponse(int tokens = 0) => _painter.EndAssistantResponse(tokens);
     public void AppendThinking(string text) => _painter.AppendThinking(text);

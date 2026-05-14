@@ -163,7 +163,7 @@ public sealed class ToolDispatcher : IDisposable
             return ToolResult.Error(planModeError);
         }
 
-        var capabilities = tool.RequiredCapabilities(input);
+        var capabilities = tool.RequiredCapabilities(input, _config.WorkingDirectory);
         bool allowed;
         string? reason;
 

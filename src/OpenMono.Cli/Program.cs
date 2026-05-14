@@ -141,7 +141,7 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
     }
     else if (renderer is TerminalRenderer terminalRenderer)
     {
-        terminalRenderer.SetContextTracking(config, tokenTracker);
+        terminalRenderer.SetContextTracking(config, session.Meta);
     }
     var tools = new ToolRegistry();
     tools.Register(new FileReadTool());

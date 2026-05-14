@@ -33,7 +33,7 @@ public sealed partial class WebFetchTool : ToolBase
         }
     };
 
-    public IReadOnlyList<Capability> RequiredCapabilities(JsonElement input)
+    public override IReadOnlyList<Capability> RequiredCapabilities(JsonElement input, string workingDirectory = "")
     {
         var url = input.TryGetProperty("url", out var u) ? u.GetString() : null;
         if (string.IsNullOrEmpty(url))

@@ -29,14 +29,14 @@ public sealed class BashTool : ToolBase
         return SanityCheck.IsDestructiveCommand(command) ? PermissionLevel.Deny : PermissionLevel.Ask;
     }
 
-    public IReadOnlyList<Capability> RequiredCapabilities(JsonElement input)
+    public override IReadOnlyList<Capability> RequiredCapabilities(JsonElement input, string workingDirectory = "")
     {
         var command = input.TryGetProperty("command", out var cmd) ? cmd.GetString() : null;
         if (string.IsNullOrWhiteSpace(command))
             return [];
 
         var parseResult = BashParser.Parse(command);
-        var caps = new List<Capability>(BashParser.ToCapabilities(parseResult));
+        var caps = new List<Capability>(BashParser.ToCapabilities(parseResult, workingDirectory));
 
         foreach (var seg in parseResult.Segments)
         {

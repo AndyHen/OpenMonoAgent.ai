@@ -187,6 +187,7 @@ public sealed class ConversationLoop : IDisposable
             var thinkingChars = 0;
             var indicatorShown = false;
             var turnTokens = 0;
+            var turnCompletionTokens = 0;
             var wasTruncated = false;
 
             var context = BuildToolContext();
@@ -198,6 +199,7 @@ public sealed class ConversationLoop : IDisposable
                 if (!t.IsCanceled) { _output.ShowWaitingIndicator(); indicatorShown = true; }
             }, TaskScheduler.Default);
 
+            var prefillStopwatch = Stopwatch.StartNew();
             await foreach (var chunk in _llm.StreamChatAsync(contextWindow, toolDefs, options, ct))
             {
                 if (!indicatorCts.IsCancellationRequested)
@@ -216,12 +218,13 @@ public sealed class ConversationLoop : IDisposable
 
                 if (!receivedFirstChunk)
                 {
+                    prefillStopwatch.Stop();
                     if (thinkingStarted && !thinkingCollapsed)
                     {
                         _output.CollapseThinking(thinkingChars);
                         thinkingCollapsed = true;
                     }
-                    _output.StartAssistantResponse();
+                    _output.StartAssistantResponse(prefillStopwatch.Elapsed);
                     receivedFirstChunk = true;
                 }
 
@@ -253,6 +256,7 @@ public sealed class ConversationLoop : IDisposable
                     _session.TotalTokensUsed += chunk.Usage.TotalTokens;
                     _session.Meta.TokenTracker?.RecordUsage(chunk.Usage.PromptTokens, chunk.Usage.CompletionTokens);
                     turnTokens += chunk.Usage.TotalTokens;
+                    turnCompletionTokens += chunk.Usage.CompletionTokens;
                 }
 
                 if (chunk.IsComplete)
@@ -265,7 +269,7 @@ public sealed class ConversationLoop : IDisposable
             if (thinkingStarted && !thinkingCollapsed)
                 _output.CollapseThinking(thinkingChars);
 
-            _output.EndAssistantResponse(turnTokens);
+            _output.EndAssistantResponse(turnCompletionTokens > 0 ? turnCompletionTokens : turnTokens);
 
             var assistantMsg = new Message
             {

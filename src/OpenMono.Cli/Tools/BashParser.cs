@@ -44,13 +44,13 @@ public static class BashParser
         return new BashParseResult(segments, redirections, subshells);
     }
 
-    public static IReadOnlyList<Capability> ToCapabilities(BashParseResult result)
+    public static IReadOnlyList<Capability> ToCapabilities(BashParseResult result, string workingDirectory = "")
     {
         var caps = new List<Capability>();
 
         foreach (var seg in result.Segments)
         {
-            caps.Add(new ProcessExecCap(seg.Binary, seg.Args));
+            caps.Add(new ProcessExecCap(seg.Binary, seg.Args, workingDirectory));
         }
 
         foreach (var redir in result.Redirections)

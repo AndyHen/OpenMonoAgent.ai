@@ -39,6 +39,7 @@ public sealed class PermissionEngine
         _config = config;
         _output = output;
         _input  = input;
+        _output.WriteInfo($"[Perm] PermissionEngine initialized. WorkingDirectory='{config.WorkingDirectory}'");
     }
 
     public async Task<CapabilityDecision> CheckCapabilitiesAsync(
@@ -76,13 +77,28 @@ public sealed class PermissionEngine
             var capType = cap.GetType().Name;
 
             if (_sessionAllowCapTypes.Contains(capType))
+            {
+                _output.WriteInfo($"[Perm] {toolName} | {capType} | ALLOWED by sessionAllowCapTypes");
                 continue;
+            }
 
             if (CheckCapabilityAllowRules(cap))
+            {
+                _output.WriteInfo($"[Perm] {toolName} | {capType} | ALLOWED by session cap rules");
                 continue;
+            }
 
             if (IsAutoAllowedCapability(cap))
+            {
+                _output.WriteInfo($"[Perm] {toolName} | {capType} | ALLOWED by IsAutoAllowed");
                 continue;
+            }
+
+            _output.WriteInfo($"[Perm] {toolName} | {capType} | NOT covered → will prompt. WorkingDir={_config.WorkingDirectory} | CapSummary={cap.Summary}");
+            if (cap is FileWriteCap fwDbg)
+                _output.WriteInfo($"[Perm]   FileWriteCap path='{fwDbg.Path}' | workDir='{_config.WorkingDirectory}' | StartsWith={fwDbg.Path.StartsWith(_config.WorkingDirectory)} | OrdinalIC={fwDbg.Path.StartsWith(_config.WorkingDirectory, StringComparison.OrdinalIgnoreCase)}");
+            if (cap is FileReadCap frDbg)
+                _output.WriteInfo($"[Perm]   FileReadCap path='{frDbg.Path}' | workDir='{_config.WorkingDirectory}' | StartsWith={frDbg.Path.StartsWith(_config.WorkingDirectory)} | OrdinalIC={frDbg.Path.StartsWith(_config.WorkingDirectory, StringComparison.OrdinalIgnoreCase)}");
 
             uncoveredCaps.Add(cap);
         }
@@ -96,6 +112,7 @@ public sealed class PermissionEngine
     public async Task<PermissionDecision> CheckAsync(
         string toolName, JsonElement input, PermissionLevel level, CancellationToken ct)
     {
+        _output.WriteInfo($"[Perm/Legacy] {toolName} | level={level} | input={input}");
 
         if (_config.Permissions.Tools.TryGetValue(toolName, out var rules))
         {
@@ -190,16 +207,22 @@ public sealed class PermissionEngine
     private bool IsAutoAllowedCapability(Capability cap) => cap switch
     {
 
-        FileReadCap fr when fr.Path.StartsWith(_config.WorkingDirectory) => true,
+        FileReadCap fr when ResolvePath(fr.Path).StartsWith(_config.WorkingDirectory, StringComparison.OrdinalIgnoreCase) => true,
 
-        FileWriteCap fw when fw.Path.StartsWith(_config.WorkingDirectory) => true,
+        FileWriteCap fw when ResolvePath(fw.Path).StartsWith(_config.WorkingDirectory, StringComparison.OrdinalIgnoreCase) => true,
 
         MemoryCap mc when mc.Operation == "read" => true,
 
         ProcessExecCap pe when IsSafeReadOnlyCommand(pe) => true,
 
+        ProcessExecCap pe when !string.IsNullOrEmpty(pe.WorkingDirectory) &&
+            pe.WorkingDirectory.StartsWith(_config.WorkingDirectory, StringComparison.OrdinalIgnoreCase) => true,
+
         _ => false
     };
+
+    private string ResolvePath(string path) =>
+        Path.IsPathRooted(path) ? path : Path.GetFullPath(path, _config.WorkingDirectory);
 
     private static bool IsSafeReadOnlyCommand(ProcessExecCap cap)
     {

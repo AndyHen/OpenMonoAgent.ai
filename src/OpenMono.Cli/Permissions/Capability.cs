@@ -21,7 +21,7 @@ public sealed record FileWriteCap(string Path, string Operation = "modify") : Ca
     };
 }
 
-public sealed record ProcessExecCap(string Binary, IReadOnlyList<string> Args) : Capability
+public sealed record ProcessExecCap(string Binary, IReadOnlyList<string> Args, string WorkingDirectory = "") : Capability
 {
     public override string Summary => Args.Count > 0
         ? $"Execute: {Binary} {string.Join(' ', Args)}"

@@ -7,7 +7,7 @@ namespace OpenMono.Tools;
 public sealed class GrepTool : ToolBase
 {
     public override string Name => "Grep";
-    public override string Description => "Search file contents using regex patterns. Uses ripgrep for fast, recursive search.";
+    public override string Description => "Search file contents using regex patterns. Uses ripgrep for fast, recursive search. For finding a file by name or path, use Glob instead.";
     public override bool IsConcurrencySafe => true;
     public override bool IsReadOnly => true;
     public override PermissionLevel DefaultPermission => PermissionLevel.AutoAllow;
@@ -21,7 +21,7 @@ public sealed class GrepTool : ToolBase
         .AddInteger("max_results", "Maximum number of results (default: 250)")
         .Require("pattern");
 
-    public IReadOnlyList<Capability> RequiredCapabilities(JsonElement input)
+    public override IReadOnlyList<Capability> RequiredCapabilities(JsonElement input, string workingDirectory = "")
     {
         var searchPath = input.TryGetProperty("path", out var p) ? p.GetString() : ".";
         if (string.IsNullOrEmpty(searchPath))

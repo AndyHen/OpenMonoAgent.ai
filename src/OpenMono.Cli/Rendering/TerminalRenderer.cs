@@ -17,10 +17,12 @@ public sealed class TerminalRenderer : IRenderer
     private int _thinkingChars;
     private readonly Stopwatch _streamStopwatch = new();
     private int _streamTokenCount;
+    private TimeSpan _prefillTime;
     private readonly System.Text.StringBuilder _streamBuffer = new();
 
     private AppConfig? _config;
-    private TokenTracker? _tokenTracker;
+    private SessionMetadata? _sessionMeta;
+    private TokenTracker? _TokenTracker => _sessionMeta?.TokenTracker;
 
     public bool Verbose { get; set; }
 
@@ -31,10 +33,10 @@ public sealed class TerminalRenderer : IRenderer
         _console = console ?? AnsiConsole.Console;
     }
 
-    public void SetContextTracking(AppConfig config, TokenTracker tokenTracker)
+    public void SetContextTracking(AppConfig config, SessionMetadata sessionMeta)
     {
         _config = config;
-        _tokenTracker = tokenTracker;
+        _sessionMeta = sessionMeta;
     }
 
     public void EnableCommandSuggestions(CommandRegistry registry)
@@ -190,11 +192,12 @@ public sealed class TerminalRenderer : IRenderer
         }
     }
 
-    public void StartAssistantResponse()
+    public void StartAssistantResponse(TimeSpan prefillTime = default)
     {
         ClearThinkingAnimation();
         _inAssistantResponse = true;
-        _streamStopwatch.Restart();
+        _prefillTime = prefillTime;
+        _streamStopwatch.Reset();
         _streamTokenCount = 0;
         Console.Write("\r\u001b[K");
         _console.MarkupLine("");
@@ -206,6 +209,8 @@ public sealed class TerminalRenderer : IRenderer
     public void StreamText(string text)
     {
         ClearThinkingAnimation();
+        if (_streamTokenCount == 0)
+            _streamStopwatch.Start();
         _streamTokenCount++;
         _streamBuffer.Append(text);
     }
@@ -223,14 +228,17 @@ public sealed class TerminalRenderer : IRenderer
             Console.WriteLine();
 
             var elapsed = _streamStopwatch.Elapsed;
-            var tokSec = elapsed.TotalSeconds > 0 ? _streamTokenCount / elapsed.TotalSeconds : 0;
+            var genTokens = tokens > 0 ? tokens : _streamTokenCount;
+            var tokSec = elapsed.TotalSeconds > 0 ? genTokens / elapsed.TotalSeconds : 0;
             _console.MarkupLine($"  [dim green]─────────────────────────────────────────────────[/]");
 
-            var stats = $"  [dim]{_streamTokenCount} chunks · {elapsed.TotalSeconds:F1}s · {tokSec:F0} tok/s";
-            if (_tokenTracker is not null && _config is not null && _config.Llm.ContextSize > 0)
+            var prefillStr = _prefillTime > TimeSpan.Zero ? $"prefill {_prefillTime.TotalSeconds:F2}s · " : "";
+            var stats = $"  [dim]{prefillStr}{genTokens} tok · {elapsed.TotalSeconds:F1}s · {tokSec:F0} tok/s";
+            var tracker = _TokenTracker;
+            if (tracker is not null && _config is not null && _config.Llm.ContextSize > 0 && tracker.LastPromptTokens > 0)
             {
-                var pct = _tokenTracker.TotalTokens * 100 / _config.Llm.ContextSize;
-                stats += $" · context {pct}%";
+                var pct = tracker.LastPromptTokens * 100 / _config.Llm.ContextSize;
+                stats += $" · context {pct}% ({tracker.LastPromptTokens}/{_config.Llm.ContextSize})";
             }
             stats += "[/]";
             _console.MarkupLine(stats);
