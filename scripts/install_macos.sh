@@ -19,6 +19,20 @@ INSTALL_DIR="$(dirname "$SCRIPT_DIR")"  # repo root (parent of scripts/)
 # shellcheck source=lib/log.sh
 source "$SCRIPT_DIR/lib/log.sh"
 
+# Initialize Homebrew in PATH (installed by install_prereqs_macos.sh)
+# Detect architecture to set correct Homebrew prefix
+ARCH=$(uname -m)
+if [ "$ARCH" = "arm64" ]; then
+    BREW_PREFIX="/opt/homebrew"
+else
+    BREW_PREFIX="/usr/local"
+fi
+
+if [ -d "$BREW_PREFIX" ]; then
+    eval "$("$BREW_PREFIX"/bin/brew shellenv)"
+    export PATH="$BREW_PREFIX/bin:$PATH"
+fi
+
 # Role selector — drives which of the install steps actually run.
 # If the caller (openmono setup) already exported OPENMONO_ROLE, use it.
 # Otherwise prompt — this handles the direct-run path where openmono CLI isn't available yet.
@@ -133,6 +147,15 @@ if [ "$OPENMONO_ROLE" != "agent" ] && command -v sysctl &>/dev/null; then
     fi
 fi
 
+# Detect pip/pip3 for optional python deps (should be available from install_prereqs)
+PIP_CMD=""
+if command -v pip3 &>/dev/null; then
+    PIP_CMD="pip3"
+elif command -v pip &>/dev/null; then
+    PIP_CMD="pip"
+fi
+[ -z "$PIP_CMD" ] && warn "pip/pip3 not found — optional python deps will be skipped on host"
+
 # Display tool versions
 detail "docker: $(docker --version 2>/dev/null | head -1)"
 detail "git: $(git --version 2>/dev/null)"
@@ -218,15 +241,27 @@ fi
 # ── Step 5: code-review-graph (agent + full only) ────────────────────────────
 
 if [ "$OPENMONO_ROLE" != "inference" ]; then
-    next_step "Setting up code-review-graph"
+    next_step "Setting up code-review-graph and graphifyy"
+
+    # Verify Python version (3.10+ required for both packages)
+    MIN_PYTHON_VERSION="3.10"
+    if command -v python3 &>/dev/null; then
+        PYTHON_VERSION=$(python3 --version 2>&1 | grep -oE '[0-9]+\.[0-9]+')
+        if [ "$(printf '%s\n' "$MIN_PYTHON_VERSION" "$PYTHON_VERSION" | sort -V | head -n 1)" != "$MIN_PYTHON_VERSION" ]; then
+            warn "Python version is older than $MIN_PYTHON_VERSION (current: $PYTHON_VERSION)"
+            die "Please run install_prereqs_macos.sh first to upgrade Python"
+        fi
+    else
+        die "Python 3 is required but not found. Please run install_prereqs_macos.sh first"
+    fi
 
     if command -v code-review-graph &>/dev/null; then
         ok "code-review-graph already installed"
-    elif command -v pip3 &>/dev/null; then
-        info "Installing code-review-graph via pip3..."
-        if run pip3 install --user code-review-graph; then
+    elif [ -n "$PIP_CMD" ]; then
+        info "Installing code-review-graph via $PIP_CMD..."
+        if run $PIP_CMD install --user code-review-graph; then
             ok "code-review-graph installed"
-        elif run pip3 install --user --break-system-packages code-review-graph; then
+        elif run $PIP_CMD install --user --break-system-packages code-review-graph; then
             ok "code-review-graph installed (--break-system-packages)"
         else
             warn "Could not install code-review-graph via pip — Docker image includes it"
@@ -255,17 +290,17 @@ if [ "$OPENMONO_ROLE" != "inference" ]; then
     # graphify — semantic knowledge graph (complements code-review-graph)
     if command -v graphify &>/dev/null; then
         ok "graphify already installed"
-    elif command -v pip3 &>/dev/null; then
-        info "Installing graphify via pip3..."
-        if run pip3 install --user graphifyy; then
+    elif [ -n "$PIP_CMD" ]; then
+        info "Installing graphify via $PIP_CMD..."
+        if run $PIP_CMD install --user graphifyy; then
             ok "graphify installed"
-        elif run pip3 install --user --break-system-packages graphifyy; then
+        elif run $PIP_CMD install --user --break-system-packages graphifyy; then
             ok "graphify installed (--break-system-packages)"
         else
             warn "Could not install graphify via pip — install manually: pip install graphifyy && graphify install"
         fi
     else
-        warn "Skipping graphify install (no pip3). Install manually: pip install graphifyy && graphify install"
+        warn "Skipping host install of graphify (no pip). Install manually: pip install graphifyy && graphify install"
     fi
 fi
 

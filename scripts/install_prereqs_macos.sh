@@ -106,6 +106,18 @@ ok "Homebrew updated"
 # Add Homebrew to PATH for this session
 export PATH="$BREW_PREFIX/bin:$PATH"
 
+# Add Homebrew to shell rc files for future sessions
+for rc_file in "$HOME/.zprofile" "$HOME/.bash_profile" "$HOME/.bashrc" "$HOME/.zshrc"; do
+    if [ -f "$rc_file" ] && ! grep -q "brew shellenv" "$rc_file"; then
+        {
+            echo ""
+            echo "# Homebrew"
+            echo "eval \"\$($BREW_PREFIX/bin/brew shellenv)\""
+        } >> "$rc_file"
+        detail "Added Homebrew to PATH in $(basename "$rc_file")"
+    fi
+done
+
 # ── Step 4: Core tools (git, curl, cmake, ripgrep, openblas, pkg-config) ──────
 
 step 4 $TOTAL_STEPS "Installing core build tools"
@@ -146,15 +158,39 @@ else
 fi
 
 # Python 3 and pip (Homebrew's python3 includes pip3)
-if command -v python3 &>/dev/null; then
-    ok "python3 already installed"
-    detail "$(python3 --version)"
-else
-    info "Installing python3..."
-    if ! run brew install python3; then
-        die "Failed to install python3"
+# Minimum version: 3.10 (required by code-review-graph and graphifyy)
+MIN_PYTHON_VERSION="3.10"
+
+check_python_version() {
+    local version_output major_minor
+
+    if ! command -v python3 &>/dev/null; then
+        return 1
     fi
-    ok "python3 installed"
+
+    version_output=$(python3 --version 2>&1)
+    major_minor=$(echo "$version_output" | grep -oE '[0-9]+\.[0-9]+')
+
+    # Compare versions: if MIN is <= current, then current is OK (return 0)
+    if [ "$(printf '%s\n' "$MIN_PYTHON_VERSION" "$major_minor" | sort -V | head -n 1)" = "$MIN_PYTHON_VERSION" ]; then
+        return 0  # version is sufficient
+    else
+        return 1  # version is too old
+    fi
+}
+
+if check_python_version; then
+    ok "python3 already installed"
+    detail "$(python3 --version) ✓ (minimum required: $MIN_PYTHON_VERSION)"
+else
+    if command -v python3 &>/dev/null; then
+        warn "python3 version is older than $MIN_PYTHON_VERSION (current: $(python3 --version))"
+    fi
+    info "Installing/upgrading python3 to latest stable..."
+    if ! run brew install python3; then
+        die "Failed to install/upgrade python3"
+    fi
+    ok "python3 ready ($(python3 --version))"
 fi
 
 if command -v pip3 &>/dev/null; then
@@ -180,134 +216,77 @@ fi
 
 step 6 $TOTAL_STEPS "Setting up Docker"
 
-# Priority 1: Docker Desktop is installed — prefer it, skip Colima
-DOCKER_DAEMON_TYPE=""
+BREW_PREFIX=$(brew --prefix)
+DOCKER_PLUGINS="$HOME/.docker/cli-plugins"
+mkdir -p "$DOCKER_PLUGINS"
+
+# Priority 1: Use Docker Desktop if it exists
 if [ -d "/Applications/Docker.app" ]; then
     DOCKER_DAEMON_TYPE="docker-desktop"
-    ok "Docker Desktop is installed"
-    if ! docker info &>/dev/null 2>&1; then
-        info "Launching Docker Desktop..."
-        open /Applications/Docker.app
-        info "Waiting for Docker daemon to be accessible..."
-        for i in $(seq 1 60); do
-            if docker info &>/dev/null 2>&1; then
-                ok "Docker daemon is now accessible"
-                break
-            fi
-            sleep 1
-            printf "."
-        done
-        echo ""
-        if ! docker info &>/dev/null 2>&1; then
-            warn "Docker daemon is still not accessible after 60s."
-            warn "Docker.app may still be starting — try again in a moment."
-        fi
-    else
-        ok "Docker daemon is running"
+    ok "Docker Desktop detected"
+    
+    if ! docker info &>/dev/null; then
+        info "Launching Docker Desktop (background)..."
+        open -g /Applications/Docker.app
     fi
 else
+    # Priority 2: Standardize on Colima for scripted installs
     DOCKER_DAEMON_TYPE="colima"
-    # Priority 2: Docker Desktop not installed — use Colima
-    # First, install Docker CLI (required for all subsequent docker commands)
-    if command -v docker &>/dev/null; then
-        ok "Docker CLI already installed"
-        detail "$(docker --version)"
-    else
-        info "Installing Docker CLI via Homebrew..."
-        if ! run brew install docker; then
-            die "Failed to install Docker CLI"
+    info "Docker Desktop not found. Ensuring Colima environment is ready..."
+
+    # Install stack
+    for pkg in docker colima docker-compose docker-buildx; do
+        if brew list "$pkg" &>/dev/null; then
+            ok "$pkg is already installed"
+        else
+            info "Installing $pkg via Homebrew..."
+            run brew install "$pkg"
         fi
-        ok "Docker CLI installed"
+    done
+
+    # Setup CLI plugins (links 'docker compose' and 'docker buildx' commands)
+    ln -sfn "$BREW_PREFIX/opt/docker-compose/bin/docker-compose" "$DOCKER_PLUGINS/docker-compose"
+    ln -sfn "$BREW_PREFIX/opt/docker-buildx/bin/docker-buildx" "$DOCKER_PLUGINS/docker-buildx"
+    ok "Docker CLI plugins linked"
+
+    ok "Colima installed"
+fi
+
+ok "Docker environment configured"
+
+# Ensure Docker daemon is running (matches Ubuntu's systemctl enable --now)
+if ! docker info &>/dev/null 2>&1; then
+    if [ "$DOCKER_DAEMON_TYPE" = "docker-desktop" ]; then
+        info "Docker Desktop is not responding. Relaunching..."
+        open -g /Applications/Docker.app
+    elif [ "$DOCKER_DAEMON_TYPE" = "colima" ]; then
+        info "Starting Colima daemon..."
+        colima start --activate 2>/dev/null || true
     fi
 
-    # Now install and start Colima
-    if command -v colima &>/dev/null; then
-        ok "Colima already installed"
-    else
-        info "Installing Colima (lightweight Docker daemon)..."
-        if ! run brew install colima; then
-            die "Failed to install Colima"
+    # Wait for Docker to be ready (works for both Docker Desktop and Colima)
+    info "Waiting for Docker daemon to be ready..."
+    for i in $(seq 1 60); do
+        if docker info &>/dev/null 2>&1; then
+            ok "Docker daemon is now running"
+            break
         fi
-        ok "Colima installed"
-    fi
+        sleep 1
+        printf "."
+    done
+    echo ""
 
     if ! docker info &>/dev/null 2>&1; then
-        info "Starting Colima daemon..."
-        if ! run colima start; then
-            die "Failed to start Colima. Check: colima status"
-        fi
-
-        info "Waiting for Docker daemon to be ready..."
-        for i in $(seq 1 30); do
-            if docker info &>/dev/null 2>&1; then
-                ok "Docker daemon is running"
-                break
-            fi
-            sleep 1
-            printf "."
-        done
-        echo ""
-
-        if ! docker info &>/dev/null 2>&1; then
-            die "Docker daemon failed to start after 30s. Check: colima status"
-        fi
-    fi
-
-    # Install docker-buildx (required for Colima path to build images)
-    if docker buildx version &>/dev/null 2>&1; then
-        ok "Docker buildx already available"
-    else
-        info "Installing docker-buildx..."
-        if run brew install docker-buildx; then
-            ok "Docker buildx installed"
+        warn "Docker daemon did not become ready within 60s."
+        warn "It may still be starting. Continue with setup, and restart if needed:"
+        if [ "$DOCKER_DAEMON_TYPE" = "docker-desktop" ]; then
+            warn "  open /Applications/Docker.app"
         else
-            warn "Docker buildx installation failed. Image builds may fail."
+            warn "  colima start"
         fi
     fi
-fi
-
-# Install Docker Compose (prefer v2 plugin, but v1 works too)
-if docker compose version &>/dev/null 2>&1; then
-    ok "Docker Compose v2 already available"
-    detail "$(docker compose version 2>/dev/null)"
-elif command -v docker-compose &>/dev/null; then
-    ok "Docker Compose v1 already available"
-    detail "$(docker-compose --version 2>/dev/null)"
 else
-    info "Installing Docker Compose via Homebrew..."
-    if run brew install docker-compose; then
-        ok "Docker Compose installed"
-        detail "$(docker-compose --version 2>/dev/null || echo 'installed')"
-    else
-        warn "Docker Compose installation failed — install manually: brew install docker-compose"
-    fi
-fi
-
-# Wire docker-compose and docker-buildx as CLI plugins so `docker compose` and `docker buildx` work
-_COMPOSE_BIN="$(brew --prefix 2>/dev/null)/opt/docker-compose/bin/docker-compose"
-if [ -f "$_COMPOSE_BIN" ]; then
-    mkdir -p "$HOME/.docker/cli-plugins"
-    ln -sfn "$_COMPOSE_BIN" "$HOME/.docker/cli-plugins/docker-compose"
-    detail "Linked docker-compose as Docker CLI plugin"
-fi
-
-_BUILDX_BIN="$(brew --prefix 2>/dev/null)/opt/docker-buildx/bin/docker-buildx"
-if [ -f "$_BUILDX_BIN" ]; then
-    mkdir -p "$HOME/.docker/cli-plugins"
-    ln -sfn "$_BUILDX_BIN" "$HOME/.docker/cli-plugins/docker-buildx"
-    detail "Linked docker-buildx as Docker CLI plugin"
-fi
-
-# Register Colima for auto-start at login (if Colima was installed)
-if command -v colima &>/dev/null && command -v brew &>/dev/null; then
-    info "Registering Colima to start automatically at login..."
-    if brew services start colima 2>/dev/null; then
-        ok "Colima registered for auto-start at login (via launchd)"
-    else
-        warn "Could not register Colima for auto-start."
-        warn "After each reboot, run: colima start"
-        warn "Or register manually: brew services start colima"
-    fi
+    ok "Docker daemon is already running"
 fi
 
 # ── Step 7: .NET 10 SDK ──────────────────────────────────────────────────────

@@ -397,8 +397,9 @@ EOF
 
     # Restart the shell with updated PATH so openmono and docker are immediately available
     # The docker group is already active in this process, and exec preserves it
+    # Use -l flag to start as login shell, which reads .zprofile/.bash_profile with Homebrew setup
     export PATH="$INSTALL_DIR:$PATH"
-    exec "$SHELL"
+    exec -l "$SHELL"
 }
 
 cmd_start() {
@@ -443,6 +444,7 @@ cmd_start() {
 }
 
 cmd_stop() {
+    _ensure_docker
     cd "$DOCKER_DIR"
     export LLAMA_PORT
     info "Stopping containers..."
@@ -539,12 +541,14 @@ cmd_agent() {
 }
 
 cmd_logs() {
+    _ensure_docker
     cd "$DOCKER_DIR"
     export LLAMA_PORT
     docker compose logs -f llama-server
 }
 
 cmd_status() {
+    _ensure_docker
     if ! docker info &>/dev/null 2>&1; then
         warn "Docker daemon is not accessible — cannot show status"
         _OS=$(uname -s)
