@@ -75,7 +75,7 @@ public sealed class TerminalRenderer : IRenderer
 
     public string? ShowCommandPicker(CommandRegistry registry)
     {
-        const string cancelChoice = "[dim]Ã¢â€ Â Cancel[/]";
+        const string cancelChoice = "[dim]← Cancel[/]";
 
         var formattedChoices = new List<string> { cancelChoice };
 
@@ -88,7 +88,7 @@ public sealed class TerminalRenderer : IRenderer
         formattedChoices.Add($"/{"quit",-12} [dim]Exit OpenMono[/]");
 
         var prompt = new SelectionPrompt<string>()
-            .Title("[bold green]Commands[/] [dim](Ã¢â€ â€˜Ã¢â€ â€œ navigate, Enter select, Ctrl+C cancel)[/]")
+            .Title("[bold green]Commands[/] [dim](↑↓ navigate, Enter select, Ctrl+C cancel)[/]")
             .PageSize(12)
             .HighlightStyle(new Style(Color.Green, decoration: Decoration.Bold))
             .AddChoices(formattedChoices);
@@ -106,9 +106,9 @@ public sealed class TerminalRenderer : IRenderer
 
         var grid = new Grid();
         grid.AddColumn(new GridColumn().NoWrap());
-        grid.AddRow($"[bold green]OpenMono.ai[/] [dim]Ã¢â‚¬â€[/] Local Coding Agent");
+        grid.AddRow($"[bold green]OpenMono.ai[/] [dim]—[/] Local Coding Agent");
         grid.AddRow($"[dim]Model:[/] [cyan]{Markup.Escape(model)}[/] [dim]|[/] [dim]Endpoint:[/] [cyan]{Markup.Escape(endpoint)}[/]");
-        grid.AddRow("[dim]Type your request, or /help for commands. Ctrl+C to clear Ã‚Â· Ctrl+C twice to exit.[/]");
+        grid.AddRow("[dim]Type your request, or /help for commands. Ctrl+C to clear · Ctrl+C twice to exit.[/]");
 
         var panel = new Panel(grid)
         {
@@ -131,7 +131,7 @@ public sealed class TerminalRenderer : IRenderer
             while (!ct.IsCancellationRequested)
             {
                 var dots = new string('.', sequence[idx % sequence.Length]);
-                Console.Write($"\r  \u001b[2;36mÃ¢Â Â¿ Thinking{dots}\u001b[0m\u001b[K");
+                Console.Write($"\r  \u001b[2;36m⠿ Thinking{dots}\u001b[0m\u001b[K");
                 Console.Out.Flush();
                 idx++;
                 try { await Task.Delay(200, ct); }
@@ -159,7 +159,7 @@ public sealed class TerminalRenderer : IRenderer
         {
 
             Console.Write("\u001b[s");
-            Console.Write("\n  \u001b[2;36mÃ¢â€”Ë† Thinking\u001b[0m\n  \u001b[2;3;90m");
+            Console.Write("\n  \u001b[2;36m◈ Thinking\u001b[0m\n  \u001b[2;3;90m");
             _thinkingActive = true;
         }
         Console.Write(text);
@@ -174,7 +174,7 @@ public sealed class TerminalRenderer : IRenderer
         Console.Write("\u001b[u\u001b[J");
         var approxTok = charCount / 4;
         var tok = approxTok > 0 ? $" [{approxTok} tok]" : "";
-        Console.Write($"\n  \u001b[2;36mÃ¢â€”Ë† Thinking{tok}\u001b[0m\n");
+        Console.Write($"\n  \u001b[2;36m◈ Thinking{tok}\u001b[0m\n");
         Console.Out.Flush();
         _thinkingActive = false;
         _thinkingChars = 0;
@@ -201,8 +201,8 @@ public sealed class TerminalRenderer : IRenderer
         _streamTokenCount = 0;
         Console.Write("\r\u001b[K");
         _console.MarkupLine("");
-        _console.MarkupLine("  [bold green]Ã¢â€”â€  Assistant[/]");
-        _console.MarkupLine("  [dim green]Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬[/]");
+        _console.MarkupLine("  [bold green]◆ Assistant[/]");
+        _console.MarkupLine("  [dim green]─────────────────────────────────────────────────[/]");
         _streamBuffer.Clear();
     }
 
@@ -227,7 +227,7 @@ public sealed class TerminalRenderer : IRenderer
                 Console.WriteLine("    " + line);
             Console.WriteLine();
 
-            _console.MarkupLine($"  [dim green]Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬[/]");
+            _console.MarkupLine($"  [dim green]─────────────────────────────────────────────────[/]");
 
             string stats;
             if (metrics is { PromptTokens: > 0 } m)
@@ -236,24 +236,24 @@ public sealed class TerminalRenderer : IRenderer
                 var evalTps = m.TimeToFirstToken.TotalSeconds > 0.001 ? m.PromptTokens / m.TimeToFirstToken.TotalSeconds : 0;
                 var genTps  = genTime.TotalSeconds > 0.001 ? m.CompletionTokens / genTime.TotalSeconds : 0;
                 stats = $"  [dim]TTFT {m.TimeToFirstToken.TotalSeconds:F1}s";
-                if (evalTps > 0) stats += $" Ã‚Â· eval {evalTps:F0}/s";
-                if (genTps  > 0) stats += $" Ã‚Â· gen {genTps:F0}/s";
-                if (m.CompletionTokens > 0) stats += $" Ã‚Â· {m.CompletionTokens} tok";
-                stats += $" Ã‚Â· {m.TotalElapsed.TotalSeconds:F1}s";
+                if (evalTps > 0) stats += $" · eval {evalTps:F0}/s";
+                if (genTps  > 0) stats += $" · gen {genTps:F0}/s";
+                if (m.CompletionTokens > 0) stats += $" · {m.CompletionTokens} tok";
+                stats += $" · {m.TotalElapsed.TotalSeconds:F1}s";
             }
             else
             {
                 var elapsed = _streamStopwatch.Elapsed;
                 var tokSec = elapsed.TotalSeconds > 0 ? _streamTokenCount / elapsed.TotalSeconds : 0;
-                var prefillStr = _prefillTime > TimeSpan.Zero ? $"prefill {_prefillTime.TotalSeconds:F2}s Ã‚Â· " : "";
-                stats = $"  [dim]{prefillStr}{_streamTokenCount} tok Ã‚Â· {elapsed.TotalSeconds:F1}s Ã‚Â· {tokSec:F0} tok/s";
+                var prefillStr = _prefillTime > TimeSpan.Zero ? $"prefill {_prefillTime.TotalSeconds:F2}s · " : "";
+                stats = $"  [dim]{prefillStr}{_streamTokenCount} tok · {elapsed.TotalSeconds:F1}s · {tokSec:F0} tok/s";
             }
 
             var tracker = _TokenTracker;
             if (tracker is not null && _config is not null && _config.Llm.ContextSize > 0 && tracker.LastPromptTokens > 0)
             {
                 var pct = tracker.LastPromptTokens * 100 / _config.Llm.ContextSize;
-                stats += $" Ã‚Â· context {pct}% ({tracker.LastPromptTokens}/{_config.Llm.ContextSize})";
+                stats += $" · context {pct}% ({tracker.LastPromptTokens}/{_config.Llm.ContextSize})";
             }
             stats += "[/]";
             _console.MarkupLine(stats);
@@ -274,38 +274,38 @@ public sealed class TerminalRenderer : IRenderer
     public void WriteDebug(string message)
     {
         if (!Verbose) return;
-        _console.MarkupLine($"  [dim cyan]Ã¢Å¸Â {Markup.Escape(message)}[/]");
+        _console.MarkupLine($"  [dim cyan]⟐ {Markup.Escape(message)}[/]");
     }
 
     public void WriteToolStart(string toolName, string args)
     {
-        var truncatedArgs = args.Length > 1000 ? args[..1000] + "Ã¢â‚¬Â¦" : args;
-        _console.MarkupLine($"  [dim]Ã¢Â§Â«[/] [bold grey]{Markup.Escape(toolName)}[/] [dim]{Markup.Escape(truncatedArgs)}[/]");
+        var truncatedArgs = args.Length > 1000 ? args[..1000] + "…" : args;
+        _console.MarkupLine($"  [dim]⧫[/] [bold grey]{Markup.Escape(toolName)}[/] [dim]{Markup.Escape(truncatedArgs)}[/]");
     }
 
     public void WriteToolSuccess(string toolName)
     {
-        _console.MarkupLine($"  [green]Ã¢Å“â€œ[/] [dim]{Markup.Escape(toolName)}[/]");
+        _console.MarkupLine($"  [green]✓[/] [dim]{Markup.Escape(toolName)}[/]");
     }
 
     public void WriteToolError(string toolName, string error)
     {
-        _console.MarkupLine($"  [red]Ã¢Å“â€” {Markup.Escape(toolName)}[/][dim]: {Markup.Escape(error)}[/]");
+        _console.MarkupLine($"  [red]✗ {Markup.Escape(toolName)}[/][dim]: {Markup.Escape(error)}[/]");
     }
 
     public void WriteToolDenied(string toolName, string reason)
     {
-        _console.MarkupLine($"  [yellow]Ã¢Å Ëœ {Markup.Escape(toolName)}[/][dim]: {Markup.Escape(reason)}[/]");
+        _console.MarkupLine($"  [yellow]⊘ {Markup.Escape(toolName)}[/][dim]: {Markup.Escape(reason)}[/]");
     }
 
     public void WriteWarning(string message)
     {
-        _console.MarkupLine($"  [yellow]Ã¢Å¡Â  {Markup.Escape(message)}[/]");
+        _console.MarkupLine($"  [yellow]⚠ {Markup.Escape(message)}[/]");
     }
 
     public void WriteError(string message)
     {
-        _console.MarkupLine($"  [red]Ã¢Å“â€” Error: {Markup.Escape(message)}[/]");
+        _console.MarkupLine($"  [red]✗ Error: {Markup.Escape(message)}[/]");
     }
 
     public void WriteInfo(string message)
@@ -368,9 +368,9 @@ public sealed class TerminalRenderer : IRenderer
         {
             var icon = todo.Status switch
             {
-                "completed" => "[green]Ã¢Å“â€œ[/]",
-                "in_progress" => "[yellow]Ã¢â€“Âº[/]",
-                _ => "[dim]Ã¢â€”â€¹[/]",
+                "completed" => "[green]✓[/]",
+                "in_progress" => "[yellow]►[/]",
+                _ => "[dim]○[/]",
             };
             var text = todo.Status == "in_progress" && todo.ActiveForm is not null
                 ? $"[yellow]{Markup.Escape(todo.ActiveForm)}[/]"

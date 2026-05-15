@@ -224,25 +224,65 @@ public sealed class PermissionEngine
     private string ResolvePath(string path) =>
         Path.IsPathRooted(path) ? path : Path.GetFullPath(path, _config.WorkingDirectory);
 
-    private static bool IsSafeReadOnlyCommand(ProcessExecCap cap)
+    private static readonly HashSet<string> SafeReadOnlyBinaries = new(StringComparer.OrdinalIgnoreCase)
     {
-        var safeReadOnlyCommands = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        "ls", "cat", "head", "tail", "wc", "pwd", "whoami", "date", "echo",
+        "which", "type", "file", "stat", "du", "df", "cd",
+    };
+
+    private static readonly HashSet<string> SafeGitSubcommands = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "status", "log", "diff", "branch", "show", "fetch", "pull",
+        "remote", "tag", "describe", "rev-parse", "rev-list", "ls-files", "shortlog",
+    };
+
+    // Git global options that consume the next argument as a value
+    private static readonly HashSet<string> GitFlagsWithValue = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--exec-path",
+    };
+
+    private static readonly Dictionary<string, HashSet<string>> SafeSubcommandsByBinary =
+        new(StringComparer.OrdinalIgnoreCase)
         {
-            "ls", "cat", "head", "tail", "wc", "pwd", "whoami", "date", "echo",
-            "which", "type", "file", "stat", "du", "df",
-            "git status", "git log", "git diff", "git branch", "git show",
-            "git fetch", "git pull", "git remote", "git tag", "git describe",
-            "git rev-parse", "git rev-list", "git ls-files", "git shortlog",
-            "npm list", "npm view", "yarn list",
-            "dotnet --version", "node --version", "python --version"
+            ["git"] = SafeGitSubcommands,
+            ["npm"] = new(StringComparer.OrdinalIgnoreCase) { "list", "view" },
+            ["yarn"] = new(StringComparer.OrdinalIgnoreCase) { "list" },
+            ["dotnet"] = new(StringComparer.OrdinalIgnoreCase) { "--version" },
+            ["node"] = new(StringComparer.OrdinalIgnoreCase) { "--version" },
+            ["python"] = new(StringComparer.OrdinalIgnoreCase) { "--version" },
         };
 
-        var fullCommand = cap.Args.Count > 0
-            ? $"{cap.Binary} {cap.Args[0]}"
-            : cap.Binary;
+    private static bool IsSafeReadOnlyCommand(ProcessExecCap cap)
+    {
+        if (SafeReadOnlyBinaries.Contains(cap.Binary))
+            return true;
 
-        return safeReadOnlyCommands.Contains(cap.Binary) ||
-               safeReadOnlyCommands.Contains(fullCommand);
+        if (!SafeSubcommandsByBinary.TryGetValue(cap.Binary, out var safeSubcommands))
+            return false;
+
+        // Walk args, skipping global flags and their values, to find the subcommand
+        var flagsWithValue = cap.Binary.Equals("git", StringComparison.OrdinalIgnoreCase)
+            ? GitFlagsWithValue
+            : null;
+
+        for (var i = 0; i < cap.Args.Count; i++)
+        {
+            var arg = cap.Args[i];
+
+            if (flagsWithValue is not null && flagsWithValue.Contains(arg))
+            {
+                i++; // skip the flag's value
+                continue;
+            }
+
+            if (arg.StartsWith('-'))
+                continue;
+
+            return safeSubcommands.Contains(arg);
+        }
+
+        return false;
     }
 
     private bool IsProtectedPath(string path)
