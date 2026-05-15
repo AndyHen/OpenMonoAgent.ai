@@ -61,7 +61,7 @@ public sealed class AgentTool : ToolBase
             MaxTokens = context.Config.Llm.MaxOutputTokens,
         };
 
-        var llm = new OpenAiCompatClient(context.Config.Llm);
+        var llm = new OpenAiCompatClient(context.Config.Llm) { ApiKey = context.Config.Llm.ApiKey };
         var completedNormally = false;
 
         try
