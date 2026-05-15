@@ -82,7 +82,7 @@ public sealed class AnsiTuiRenderer : IRenderer
 
     public void StartAssistantResponse(TimeSpan prefillTime = default) => _painter.StartAssistantResponse();
     public void StreamText(string text)     => _painter.StreamText(text);
-    public void EndAssistantResponse(int tokens = 0) => _painter.EndAssistantResponse(tokens);
+    public void EndAssistantResponse(TurnMetrics? metrics = null) => _painter.EndAssistantResponse(metrics);
     public void AppendThinking(string text) => _painter.AppendThinking(text);
     public void CollapseThinking(int n)     => _painter.CollapseThinking(n);
     public void ShowWaitingIndicator()      => _painter.ShowWaitingIndicator();

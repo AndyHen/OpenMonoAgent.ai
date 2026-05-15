@@ -187,8 +187,14 @@ public sealed class ConversationLoop : IDisposable
             var thinkingChars = 0;
             var indicatorShown = false;
             var turnTokens = 0;
+<<<<<<< HEAD
             var turnCompletionTokens = 0;
             var wasTruncated = false;
+=======
+            var requestSw = Stopwatch.StartNew();
+            var ttft = TimeSpan.Zero;
+            UsageInfo? lastUsage = null;
+>>>>>>> origin/main
 
             var context = BuildToolContext();
             var inFlightTasks = new Dictionary<string, Task<ToolResult>>();
@@ -199,7 +205,12 @@ public sealed class ConversationLoop : IDisposable
                 if (!t.IsCanceled) { _output.ShowWaitingIndicator(); indicatorShown = true; }
             }, TaskScheduler.Default);
 
+<<<<<<< HEAD
             var prefillStopwatch = Stopwatch.StartNew();
+=======
+            try
+            {
+>>>>>>> origin/main
             await foreach (var chunk in _llm.StreamChatAsync(contextWindow, toolDefs, options, ct))
             {
                 if (!indicatorCts.IsCancellationRequested)
@@ -218,7 +229,11 @@ public sealed class ConversationLoop : IDisposable
 
                 if (!receivedFirstChunk)
                 {
+<<<<<<< HEAD
                     prefillStopwatch.Stop();
+=======
+                    ttft = requestSw.Elapsed;
+>>>>>>> origin/main
                     if (thinkingStarted && !thinkingCollapsed)
                     {
                         _output.CollapseThinking(thinkingChars);
@@ -253,6 +268,7 @@ public sealed class ConversationLoop : IDisposable
 
                 if (chunk.Usage is not null)
                 {
+                    lastUsage = chunk.Usage;
                     _session.TotalTokensUsed += chunk.Usage.TotalTokens;
                     _session.Meta.TokenTracker?.RecordUsage(chunk.Usage.PromptTokens, chunk.Usage.CompletionTokens);
                     turnTokens += chunk.Usage.TotalTokens;
@@ -265,11 +281,29 @@ public sealed class ConversationLoop : IDisposable
                     break;
                 }
             }
+            }
+            finally
+            {
+                if (!indicatorCts.IsCancellationRequested)
+                    indicatorCts.Cancel();
+                await indicatorTask;
+                _output.ClearWaitingIndicator();
+            }
 
             if (thinkingStarted && !thinkingCollapsed)
                 _output.CollapseThinking(thinkingChars);
 
+<<<<<<< HEAD
             _output.EndAssistantResponse(turnCompletionTokens > 0 ? turnCompletionTokens : turnTokens);
+=======
+            _output.EndAssistantResponse(new TurnMetrics
+            {
+                PromptTokens = lastUsage?.PromptTokens ?? 0,
+                CompletionTokens = lastUsage?.CompletionTokens ?? turnTokens,
+                TimeToFirstToken = ttft,
+                TotalElapsed = requestSw.Elapsed,
+            });
+>>>>>>> origin/main
 
             var assistantMsg = new Message
             {
@@ -794,6 +828,9 @@ public sealed class ConversationLoop : IDisposable
         AskUser = (question, ct) => _input.AskUserAsync(question, ct),
         FileHistory = _session.Meta.FileHistory,
         Cursors = _cursorStore,
+        BeginResponse = _output.StartAssistantResponse,
+        EndResponse = () => _output.EndAssistantResponse(),
+        StreamText = _output.StreamText,
     };
 
 }

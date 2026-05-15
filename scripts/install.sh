@@ -30,6 +30,29 @@ INSTALL_DIR="$(dirname "$SCRIPT_DIR")"  # repo root (parent of scripts/)
 # shellcheck source=lib/log.sh
 source "$SCRIPT_DIR/lib/log.sh"
 
+# MODEL_ACCURACY, MODEL_ALIAS, and _MODEL_LABEL.
+select_model() {
+    case "${1:-0}" in
+        24) MODEL_NAME="Qwen3.6-27B-Q4_K_M.gguf"
+            MODEL_URL="https://huggingface.co/unsloth/Qwen3.6-27B-GGUF/resolve/main/Qwen3.6-27B-Q4_K_M.gguf"
+            MODEL_ACCURACY="full"
+            _MODEL_LABEL="Qwen3.6-27B-Q4_K_M (~15GB) [GPU 24GB+ — full accuracy]" ;;
+        16) MODEL_NAME="Qwen3.6-27B-UD-IQ3_XXS.gguf"
+            MODEL_URL="https://huggingface.co/unsloth/Qwen3.6-27B-GGUF/resolve/main/Qwen3.6-27B-UD-IQ3_XXS.gguf"
+            MODEL_ACCURACY="lower"
+            _MODEL_LABEL="Qwen3.6-27B-UD-IQ3_XXS (~12GB) [GPU 16GB — lower accuracy]" ;;
+        12) MODEL_NAME="Qwen3.5-9B-Q4_K_M.gguf"
+            MODEL_URL="https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf"
+            MODEL_ACCURACY="lower"
+            _MODEL_LABEL="Qwen3.5-9B-Q4_K_M (~5GB) [GPU 12GB — lower accuracy]" ;;
+        *)  MODEL_NAME="Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf"
+            MODEL_URL="https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf"
+            MODEL_ACCURACY="standard"
+            _MODEL_LABEL="Qwen3.6-35B-A3B (~17.6GB) [CPU]" ;;
+    esac
+    MODEL_ALIAS="${MODEL_NAME%.gguf}"
+}
+
 # ── Auto-recover from fresh `usermod -aG docker` ──────────────────────────────
 # Common footgun: install_prereqs.sh just ran `usermod -aG docker $USER`, but
 # the *current* shell's supplementary group list was captured at login and
@@ -188,23 +211,19 @@ ok "Install directory: $INSTALL_DIR"
 next_step "Checking system requirements"
 
 # GPU_MODE is exported by install_prereqs.sh (1 = GPU, 0 = CPU).
-# Query VRAM to determine the right model tier. Only for roles that load a model.
-# Tiers:  24GB+ → Qwen3.6-27B Q4  (full accuracy)
-#         16GB  → Qwen3.6-35B-A3B Q3 + q4 kv cache  (lower accuracy)
-#         12GB  → Qwen3.5-9B Q4 + q4 kv cache        (lower accuracy)
-#         CPU   → Qwen3.6-35B-A3B Q4_K_XL (MoE, 3.5B active params)
 _VRAM_MB=0
 _GPU_TIER=0
 MODEL_NAME=""
 MODEL_ACCURACY=""
+MODEL_ALIAS=""
 if [ "$OPENMONO_ROLE" != "agent" ]; then
     if [ "${GPU_MODE:-0}" = "1" ]; then
         if command -v nvidia-smi &>/dev/null; then
             _VRAM_MB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | awk 'NR==1{print $1}')
             _VRAM_MB=${_VRAM_MB:-0}
-            if   [ "$_VRAM_MB" -ge 24000 ]; then _GPU_TIER=24; ok "GPU VRAM: $(( (_VRAM_MB + 512) / 1024 ))GB — full accuracy model (Qwen3.6-27B)"
-            elif [ "$_VRAM_MB" -ge 16000 ]; then _GPU_TIER=16; warn "GPU VRAM: $(( (_VRAM_MB + 512) / 1024 ))GB — lower accuracy model (Qwen3.6-35B-A3B Q3 + q4 kv cache). For best results use 24GB+ VRAM."
-            elif [ "$_VRAM_MB" -ge 12000 ]; then _GPU_TIER=12; warn "GPU VRAM: $(( (_VRAM_MB + 512) / 1024 ))GB — lower accuracy model (Qwen3.5-9B Q4 + q4 kv cache). For best results use 24GB+ VRAM."
+            if   [ "$_VRAM_MB" -ge 24000 ]; then _GPU_TIER=24; ok "GPU VRAM: $(( (_VRAM_MB + 512) / 1024 ))GB — full accuracy tier (24GB+)"
+            elif [ "$_VRAM_MB" -ge 16000 ]; then _GPU_TIER=16; warn "GPU VRAM: $(( (_VRAM_MB + 512) / 1024 ))GB — lower accuracy tier (16GB). For best results use 24GB+ VRAM."
+            elif [ "$_VRAM_MB" -ge 12000 ]; then _GPU_TIER=12; warn "GPU VRAM: $(( (_VRAM_MB + 512) / 1024 ))GB — lower accuracy tier (12GB). For best results use 24GB+ VRAM."
             else
                 warn "GPU mode selected but only $(( (_VRAM_MB + 512) / 1024 ))GB VRAM — minimum is 12GB. Falling back to CPU mode."
                 GPU_MODE=0
@@ -223,6 +242,8 @@ if [ "$OPENMONO_ROLE" != "agent" ]; then
             fi
         fi
     fi
+    select_model "$_GPU_TIER"
+    ok "Model selected: $MODEL_NAME"
 fi
 
 # Display tool versions (prerequisites already verified above)
@@ -266,27 +287,7 @@ cd "$INSTALL_DIR"
 if [ "$OPENMONO_ROLE" != "agent" ]; then
     MODEL_DIR="$INSTALL_DIR/models"
 
-    if [ "$_GPU_TIER" -eq 24 ]; then
-        MODEL_NAME="Qwen3.6-27B-Q4_K_M.gguf"
-        MODEL_URL="https://huggingface.co/unsloth/Qwen3.6-27B-GGUF/resolve/main/Qwen3.6-27B-Q4_K_M.gguf"
-        MODEL_ACCURACY="full"
-        next_step "Downloading Qwen3.6-27B-Q4_K_M (~15GB) [GPU 24GB+ — full accuracy]"
-    elif [ "$_GPU_TIER" -eq 16 ]; then
-        MODEL_NAME="Qwen3.6-27B-UD-IQ3_XXS.gguf"
-        MODEL_URL="https://huggingface.co/unsloth/Qwen3.6-27B-GGUF/resolve/main/Qwen3.6-27B-UD-IQ3_XXS.gguf"
-        MODEL_ACCURACY="lower"
-        next_step "Downloading Qwen3.6-27B-UD-IQ3_XXS (~12GB) [GPU 16GB — lower accuracy]"
-    elif [ "$_GPU_TIER" -eq 12 ]; then
-        MODEL_NAME="Qwen3.5-9B-Q4_K_M.gguf"
-        MODEL_URL="https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf"
-        MODEL_ACCURACY="lower"
-        next_step "Downloading Qwen3.5-9B-Q4_K_M (~5GB) [GPU 12GB — lower accuracy]"
-    else
-        MODEL_NAME="qwen3.6-35b-a3b-ud-q4_k_xl.gguf"
-        MODEL_URL="https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf"
-        MODEL_ACCURACY="standard"
-        next_step "Downloading Qwen3.6-35B-A3B (~17.6GB) [CPU]"
-    fi
+    next_step "Downloading $_MODEL_LABEL"
 
     # Dev override: fetch from local mirror at http://<host>/models/<filename>
     if [ -n "${OPENMONO_MODEL_MIRROR:-}" ]; then
@@ -406,32 +407,30 @@ if [ "$OPENMONO_ROLE" != "agent" ]; then
         info "CPU mode"
     fi
 
-OVERRIDE_FILE="$INSTALL_DIR/docker/docker-compose.override.yml"
-# Derive a clean alias from the filename (strip .gguf) so /props returns the right name
-MODEL_ALIAS="${MODEL_NAME%.gguf}"
-
-if [ "${GPU_MODE:-0}" = "1" ]; then
-    # 24GB tier: q8 kv cache (high quality); 16GB/12GB tiers: q4 kv cache (saves VRAM)
-    if [ "$_GPU_TIER" -ge 24 ]; then
-        _KV_K="q8_0"; _KV_V="q8_0"
-        _CTX=196608
-    elif [ "$_GPU_TIER" -ge 16 ]; then
-        _KV_K="q4_0"; _KV_V="q4_0"
-        _CTX=180224
-    else
-        _KV_K="q4_0"; _KV_V="q4_0"
-        _CTX=196608
-    fi
-    [ "$MODEL_ACCURACY" = "lower" ] && info "Lower accuracy model selected — q4 kv cache enabled to fit $(( (_VRAM_MB + 512) / 1024 ))GB VRAM"
-    info "Writing GPU override: $OVERRIDE_FILE"
-    cat > "$OVERRIDE_FILE" <<EOF
+    OVERRIDE_FILE="$INSTALL_DIR/docker/docker-compose.override.yml"
+    
+    if [ "${GPU_MODE:-0}" = "1" ]; then
+        # 24GB tier: q8 kv cache (high quality); 16GB/12GB tiers: q4 kv cache (saves VRAM)
+        if [ "$_GPU_TIER" -ge 24 ]; then
+            _KV_K="q8_0"; _KV_V="q8_0"
+            _CTX=196608
+        elif [ "$_GPU_TIER" -ge 16 ]; then
+            _KV_K="q4_0"; _KV_V="q4_0"
+            _CTX=180224
+        else
+            _KV_K="q4_0"; _KV_V="q4_0"
+            _CTX=196608
+        fi
+        [ "$MODEL_ACCURACY" = "lower" ] && info "Lower accuracy model selected — q4 kv cache enabled to fit $(( (_VRAM_MB + 512) / 1024 ))GB VRAM"
+        info "Writing GPU override: $OVERRIDE_FILE"
+        cat > "$OVERRIDE_FILE" <<EOF
 # GPU configuration (auto-generated by install.sh — ${MODEL_ACCURACY:-full} accuracy)
 services:
   llama-server:
     image: ghcr.io/ggml-org/llama.cpp:server-cuda
     command: >
-      --model /models/$MODEL_NAME
-      --alias $MODEL_ALIAS
+      --model /models/\${MODEL_NAME}
+      --alias \${MODEL_ALIAS:-model}
       --host 0.0.0.0
       --port 7474
       --ctx-size $_CTX
@@ -458,6 +457,26 @@ services:
               capabilities: [gpu]
 EOF
     ok "GPU override written"
+    printf "     ${DIM}model: $MODEL_NAME  ·  ctx: $(( _CTX / 1024 ))k  ·  kv: ${_KV_K}  ·  layers: 99  ·  accuracy: ${MODEL_ACCURACY:-full}${NC}\n"
+    printf "     ${DIM}config: $OVERRIDE_FILE  (restart: docker compose up -d llama-server)${NC}\n"
+
+    printf "\n  ${BOLD}${CYAN}Tuning knobs${NC}\n"
+    printf "     ${DIM}--ctx-size N      halve to free ~half the KV-cache VRAM${NC}\n"
+    printf "     ${DIM}                  presets: 32k=32768  64k=65536  128k=131072  192k=196608${NC}\n"
+    printf "     ${DIM}--cache-type-k/v  f16 (best) → q8_0 → q5_1 → q4_1 → q4_0 (least VRAM)${NC}\n"
+    printf "     ${DIM}--n-gpu-layers    99=all on GPU; lower to spill layers to CPU RAM${NC}\n"
+    printf "     ${DIM}--parallel N      N concurrent slots, each costs ctx-size of KV cache${NC}\n"
+
+    printf "\n  ${BOLD}${CYAN}Swapping models${NC}\n"
+    printf "     ${DIM}Any GGUF works — different family or a different quant of this model${NC}\n"
+    printf "     ${DIM}1.  Copy .gguf into $INSTALL_DIR/models/${NC}\n"
+    printf "     ${DIM}2.  docker/.env → MODEL_NAME=file.gguf  MODEL_ALIAS=file${NC}\n"
+    printf "     ${DIM}3.  docker compose up -d llama-server${NC}\n"
+    printf "     \n"
+    printf "     ${DIM}Quants:  Q6_K > Q5_K_M > Q4_K_M > Q3_K_M  (quality vs VRAM)${NC}\n"
+    printf "     ${DIM}IQ:      IQ3_XXS / IQ4_XS match one tier higher quality at lower size${NC}\n"
+    printf "     ${DIM}MoE:     A3B / A22B suffix — only active params computed, runs faster${NC}\n"
+    printf "     ${DIM}Tier or GPU↔CPU change: re-run openmono setup${NC}\n"
 else
     info "Writing CPU override: $OVERRIDE_FILE"
     # Thread count tuned to physical cores (SMT hurts llama.cpp throughput).
@@ -470,8 +489,8 @@ services:
   llama-server:
     image: ghcr.io/ggml-org/llama.cpp:server-vulkan
     command: >
-      --model /models/$MODEL_NAME
-      --alias $MODEL_ALIAS
+      --model /models/\${MODEL_NAME}
+      --alias \${MODEL_ALIAS:-model}
       --host 0.0.0.0
       --port 7474
       --ctx-size 196608
@@ -489,6 +508,25 @@ services:
       \${LLAMA_API_KEY:+--api-key \${LLAMA_API_KEY}}
 EOF
     ok "CPU override written"
+    printf "     ${DIM}model: $MODEL_NAME  ·  ctx: 192k  ·  kv: q8_0  ·  threads: $CPU_THREADS (physical cores)${NC}\n"
+    printf "     ${DIM}config: $OVERRIDE_FILE  (restart: docker compose up -d llama-server)${NC}\n"
+
+    printf "\n  ${BOLD}${CYAN}Tuning knobs${NC}\n"
+    printf "     ${DIM}--ctx-size N      halve to free ~half the KV-cache RAM, speeds up prompt processing${NC}\n"
+    printf "     ${DIM}                  presets: 32k=32768  64k=65536  128k=131072  192k=196608${NC}\n"
+    printf "     ${DIM}--cache-type-k/v  f16 (best) → q8_0 → q5_1 → q4_1 → q4_0 (least RAM)${NC}\n"
+    printf "     ${DIM}--threads N       physical cores optimal ($CPU_THREADS); SMT/HT hurts llama.cpp throughput${NC}\n"
+
+    printf "\n  ${BOLD}${CYAN}Swapping models${NC}\n"
+    printf "     ${DIM}Any GGUF works — different family or a different quant of this model${NC}\n"
+    printf "     ${DIM}1.  Copy .gguf into $INSTALL_DIR/models/${NC}\n"
+    printf "     ${DIM}2.  docker/.env → MODEL_NAME=file.gguf  MODEL_ALIAS=file${NC}\n"
+    printf "     ${DIM}3.  docker compose up -d llama-server${NC}\n"
+    printf "     \n"
+    printf "     ${DIM}Quants:  Q6_K > Q5_K_M > Q4_K_M > Q3_K_M  (quality vs RAM)${NC}\n"
+    printf "     ${DIM}IQ:      IQ3_XXS / IQ4_XS match one tier higher quality at lower size${NC}\n"
+    printf "     ${DIM}MoE:     A3B / A22B suffix — only active params computed, runs faster${NC}\n"
+    printf "     ${DIM}Switch to GPU: re-run openmono setup${NC}\n"
 
     # ── CPU tuning: request the 'performance' power profile ────────────────
     # llama.cpp on CPU is limited by sustained clock speed. The default
@@ -515,6 +553,15 @@ EOF
         info " 'cpupower frequency-set -g performance' depending on your distro)."
     fi
 fi
+
+DOCKER_ENV_FILE="$INSTALL_DIR/docker/.env"
+if [ -f "$DOCKER_ENV_FILE" ]; then
+    grep -v -E "^MODEL_NAME=|^MODEL_ALIAS=" "$DOCKER_ENV_FILE" > "${DOCKER_ENV_FILE}.tmp" || true
+    mv "${DOCKER_ENV_FILE}.tmp" "$DOCKER_ENV_FILE"
+fi
+printf "MODEL_NAME=%s\nMODEL_ALIAS=%s\n" "$MODEL_NAME" "$MODEL_ALIAS" >> "$DOCKER_ENV_FILE"
+detail "Persisted MODEL_NAME=$MODEL_NAME to $DOCKER_ENV_FILE"
+
 fi  # End of Step 6 (skipped on agent role)
 
 # ── Step 7: Build Docker images (role-specific) ───────────────────────────────
@@ -576,6 +623,12 @@ if [ "$OPENMONO_ROLE" != "agent" ]; then
     fi
 
     export LLAMA_PORT
+    if [ -f "$DOCKER_ENV_FILE" ]; then
+        grep -v "^LLAMA_PORT=" "$DOCKER_ENV_FILE" > "${DOCKER_ENV_FILE}.tmp" || true
+        mv "${DOCKER_ENV_FILE}.tmp" "$DOCKER_ENV_FILE"
+    fi
+    echo "LLAMA_PORT=${LLAMA_PORT}" >> "$DOCKER_ENV_FILE"
+    detail "Persisted LLAMA_PORT=${LLAMA_PORT} to $DOCKER_ENV_FILE"
 
     info "Starting daemon on port ${LLAMA_PORT}..."
     if ! run docker compose up -d llama-server; then

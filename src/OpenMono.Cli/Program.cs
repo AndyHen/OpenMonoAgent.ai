@@ -228,6 +228,13 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
 
     renderer.WriteWelcome(config.Llm.Model, config.Llm.Endpoint);
 
+    Task? warmupTask = null;
+    if (!await IsServerWarmAsync(config.Llm.Endpoint))
+    {
+        renderer.WriteInfo("Warming KV cache in background — first response will be slower.");
+        warmupTask = SendWarmupAsync(config.Llm.Endpoint, systemPrompt, tools.BuildToolDefinitions(), config.Llm.Model);
+    }
+
     var lastCtrlCExitTime = DateTime.MinValue;
 
     CancellationTokenSource? currentTurnCts = null;
@@ -347,6 +354,14 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
         using var turnCts = new CancellationTokenSource();
         currentTurnCts = turnCts;
         if (ansiTui is not null) ansiTui.CurrentTurnCts = turnCts;
+        if (warmupTask is not null)
+        {
+            renderer.WriteInfo(warmupTask.IsCompleted
+                ? "KV cache warm — responses will be fast."
+                : "KV cache still warming — this response will be slower.");
+            warmupTask = null;
+        }
+
         try
         {
             await loop.RunTurnAsync(resolvedInput, turnCts.Token);
@@ -358,29 +373,33 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
         }
         catch (HttpRequestException ex)
         {
-            renderer.WriteError($"LLM error: {ex.Message}");
-            var hint = ex.StatusCode switch
+            if (ex.StatusCode is null)
             {
-                System.Net.HttpStatusCode.InternalServerError =>
-                    "llama-server returned 500. Likely causes: context too long (KV cache overflow), " +
-                    "out of GPU memory, or model crash.\n" +
-                    "Check logs: docker logs llama-server --tail 40",
-                System.Net.HttpStatusCode.ServiceUnavailable =>
-                    "llama-server is busy or still loading — wait a moment and try again.\n" +
-                    "Check status: curl http://localhost:7474/health",
-                System.Net.HttpStatusCode.TooManyRequests =>
-                    "llama-server rate limit hit — wait a moment and try again.",
-                System.Net.HttpStatusCode.BadRequest =>
-                    "llama-server rejected the request (400). The conversation may be malformed.\n" +
-                    "Try starting a new session: /new",
-                null =>
-                    "Cannot reach llama-server. Is it running?\n" +
-                    "Check: curl http://localhost:7474/health\n" +
-                    "Start:  docker compose --profile full up -d llama-server",
-                _ =>
-                    "Check: curl http://localhost:7474/health",
-            };
-            renderer.WriteInfo(hint);
+                renderer.WriteError($"LLM error: {ex.Message}");
+                await TryRecoverLlamaServerAsync(renderer, config.WorkingDirectory, config.Llm.Endpoint);
+            }
+            else
+            {
+                renderer.WriteError($"LLM error: {ex.Message}");
+                var hint = ex.StatusCode switch
+                {
+                    System.Net.HttpStatusCode.InternalServerError =>
+                        "llama-server returned 500. Likely causes: context too long (KV cache overflow), " +
+                        "out of GPU memory, or model crash.\n" +
+                        "Check logs: docker logs llama-server --tail 40",
+                    System.Net.HttpStatusCode.ServiceUnavailable =>
+                        "llama-server is busy or still loading — wait a moment and try again.\n" +
+                        "Check status: curl http://localhost:7474/health",
+                    System.Net.HttpStatusCode.TooManyRequests =>
+                        "llama-server rate limit hit — wait a moment and try again.",
+                    System.Net.HttpStatusCode.BadRequest =>
+                        "llama-server rejected the request (400). The conversation may be malformed.\n" +
+                        "Try starting a new session: /new",
+                    _ =>
+                        "Check: curl http://localhost:7474/health",
+                };
+                renderer.WriteInfo(hint);
+            }
             Log.Error("LLM connection failed", ex);
         }
         catch (Exception ex)
@@ -410,6 +429,184 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
 
     await sessionManager.SaveAsync(session, CancellationToken.None);
     renderer.WriteInfo($"Session saved: {session.Id}");
+}
+
+static async Task<bool> IsServerWarmAsync(string endpoint)
+{
+    try
+    {
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        var metrics = await http.GetStringAsync($"{endpoint.TrimEnd('/')}/metrics");
+        var line = metrics.Split('\n')
+            .FirstOrDefault(l => l.StartsWith("llamacpp:prompt_tokens_total"));
+        if (line is not null && double.TryParse(line.Split(' ').LastOrDefault(), out var tokens) && tokens > 0)
+        {
+            Log.Debug($"[warmup] Server already processed {tokens} prompt tokens — skipping.");
+            return true;
+        }
+    }
+    catch { }
+    return false;
+}
+
+static async Task SendWarmupAsync(string endpoint, string systemPrompt, System.Text.Json.JsonElement toolDefs, string model)
+{
+    var baseUrl = endpoint.TrimEnd('/');
+    var apiKey  = Environment.GetEnvironmentVariable("OPENMONO_API_KEY")
+               ?? Environment.GetEnvironmentVariable("LLAMA_API_KEY")
+               ?? "";
+
+    var bodyDict = new Dictionary<string, object?>
+    {
+        ["model"] = model,
+        ["messages"] = new object[]
+        {
+            new { role = "system", content = systemPrompt },
+            new { role = "user",   content = "ping" },
+        },
+        ["max_tokens"] = 1,
+        ["temperature"] = 0.0,
+        ["stream"] = false,
+        ["tool_choice"] = "none",
+    };
+
+    if (toolDefs.ValueKind == System.Text.Json.JsonValueKind.Array && toolDefs.GetArrayLength() > 0)
+        bodyDict["tools"] = toolDefs;
+
+    var json = System.Text.Json.JsonSerializer.Serialize(bodyDict);
+    using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+    var request = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/v1/chat/completions")
+    {
+        Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json"),
+    };
+    if (!string.IsNullOrEmpty(apiKey))
+        request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {apiKey}");
+
+    var t0 = DateTime.UtcNow;
+    try
+    {
+        using var response = await http.SendAsync(request);
+        response.EnsureSuccessStatusCode();
+        var elapsed = (DateTime.UtcNow - t0).TotalSeconds;
+        Log.Debug($"[warmup] Done in {elapsed:F1}s — full prompt + tools cached.");
+    }
+    catch (Exception ex)
+    {
+        Log.Debug($"[warmup] Failed (non-fatal): {ex.Message}");
+    }
+}
+
+static async Task TryRecoverLlamaServerAsync(IRenderer renderer, string workingDirectory, string endpoint)
+{
+    renderer.WriteWarning($"llama-server isn't reachable at {endpoint}");
+
+    var healthUrl   = $"{endpoint.TrimEnd('/')}/health";
+    var composeFile = Path.Combine(workingDirectory, "docker", "docker-compose.yml");
+    var composeDir  = Path.GetDirectoryName(composeFile)!;
+
+    var dockerBin = OperatingSystem.IsWindows() ? "docker.exe" : "docker";
+    var dockerAvailable = (Environment.GetEnvironmentVariable("PATH") ?? "")
+        .Split(Path.PathSeparator)
+        .Any(dir => File.Exists(Path.Combine(dir, dockerBin)));
+
+    if (!dockerAvailable)
+    {
+        renderer.WriteWarning("docker is not accessible from inside this container.");
+        renderer.WriteInfo("On your host machine run:");
+        renderer.WriteInfo("  cd ~/openmono.ai/docker");
+        renderer.WriteInfo("  docker compose up -d llama-server");
+        var hostHealthUrl = healthUrl.Replace("llama-server", "localhost");
+        renderer.WriteInfo($"Check: curl {hostHealthUrl}  (HTTP 200 = ready)");
+        renderer.WriteInfo($"Watching {healthUrl} — I'll notify you when it's up (Ctrl+C to skip)...");
+        await PollHealthAsync(renderer, healthUrl, timeoutSeconds: 300);
+        return;
+    }
+
+    var answer = await renderer.AskUserAsync("Start llama-server now? [y/N]", CancellationToken.None);
+    if (!answer.Trim().Equals("y", StringComparison.OrdinalIgnoreCase) &&
+        !answer.Trim().Equals("yes", StringComparison.OrdinalIgnoreCase))
+        return;
+
+    renderer.WriteInfo("Starting llama-server...");
+    try
+    {
+        var startDir = File.Exists(composeFile) ? composeDir : workingDirectory;
+        var proc = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = "docker",
+            Arguments = "compose --profile full up -d llama-server",
+            UseShellExecute = false,
+            WorkingDirectory = startDir,
+        });
+        if (proc is null)
+        {
+            renderer.WriteWarning("Could not launch docker — is Docker installed and on PATH?");
+            return;
+        }
+        await proc.WaitForExitAsync();
+        if (proc.ExitCode != 0)
+        {
+            renderer.WriteWarning("docker compose failed — run it manually to see the error output.");
+            return;
+        }
+
+        renderer.WriteInfo($"Container started. Polling {healthUrl}...");
+        await PollHealthAsync(renderer, healthUrl, timeoutSeconds: 120);
+    }
+    catch (Exception startEx)
+    {
+        renderer.WriteWarning($"Could not start llama-server: {startEx.Message}");
+    }
+}
+
+static async Task PollHealthAsync(IRenderer renderer, string healthUrl, int timeoutSeconds)
+{
+    using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+    var started    = DateTime.UtcNow;
+    var deadline   = started.AddSeconds(timeoutSeconds);
+    var lastStatus = "";
+
+    while (DateTime.UtcNow < deadline)
+    {
+        var elapsed = (int)(DateTime.UtcNow - started).TotalSeconds;
+        string status;
+        bool ready, isHttpResponse;
+        try
+        {
+            var resp    = await http.GetAsync(healthUrl);
+            var body    = (await resp.Content.ReadAsStringAsync()).Trim();
+            var snippet = body.Length > 120 ? body[..120] + "…" : body;
+            status         = $"HTTP {(int)resp.StatusCode} — {snippet}";
+            ready          = resp.IsSuccessStatusCode;
+            isHttpResponse = true;
+        }
+        catch (Exception pollEx)
+        {
+            status         = pollEx.InnerException?.Message ?? pollEx.Message;
+            ready          = false;
+            isHttpResponse = false;
+        }
+
+        if (status != lastStatus)
+        {
+            if (isHttpResponse)
+                renderer.WriteInfo($"  [{elapsed,3}s] → {status}");
+            else
+                renderer.WriteWarning($"[{elapsed,3}s] → {status}");
+            lastStatus = status;
+        }
+
+        if (ready)
+        {
+            renderer.WriteToolSuccess($"Ready after {elapsed}s — retry your message.");
+            return;
+        }
+
+        await Task.Delay(2000);
+    }
+
+    renderer.WriteWarning($"Timed out after {timeoutSeconds}s. Last response: {lastStatus}");
+    renderer.WriteInfo("Check logs: docker logs llama-server --tail 20");
 }
 
 static async Task<string> BuildSystemPrompt(AppConfig config, MemoryStore memoryStore, PlaybookRegistry? playbookRegistry = null)

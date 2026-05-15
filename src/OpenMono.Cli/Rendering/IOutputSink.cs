@@ -2,13 +2,21 @@ using OpenMono.Session;
 
 namespace OpenMono.Rendering;
 
+public sealed record TurnMetrics
+{
+    public int PromptTokens { get; init; }
+    public int CompletionTokens { get; init; }
+    public TimeSpan TimeToFirstToken { get; init; }
+    public TimeSpan TotalElapsed { get; init; }
+}
+
 public interface IOutputSink
 {
     bool Verbose { get; set; }
 
     void StartAssistantResponse(TimeSpan prefillTime = default);
     void StreamText(string text);
-    void EndAssistantResponse(int tokens = 0);
+    void EndAssistantResponse(TurnMetrics? metrics = null);
 
     void AppendThinking(string text);
     void CollapseThinking(int charCount);

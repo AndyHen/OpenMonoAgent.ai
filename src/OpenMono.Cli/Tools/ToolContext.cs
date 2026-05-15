@@ -15,6 +15,9 @@ public sealed class ToolContext
     public required Action<string> WriteOutput { get; init; }
     public required Func<string, CancellationToken, Task<string>> AskUser { get; init; }
     public FileHistory? FileHistory { get; init; }
-
     public CursorStore? Cursors { get; init; }
+
+    public Action? BeginResponse { get; init; }
+    public Action? EndResponse { get; init; }
+    public Action<string>? StreamText { get; init; }
 }

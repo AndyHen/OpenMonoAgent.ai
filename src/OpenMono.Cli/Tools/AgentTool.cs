@@ -72,16 +72,32 @@ public sealed class AgentTool : ToolBase
 
                 var textBuffer = new StringBuilder();
                 var toolCalls = new List<ToolCall>();
+                var canStream = context.StreamText is not null;
+                var responseStarted = false;
 
                 await foreach (var chunk in llm.StreamChatAsync(subSession.Messages, toolDefs, options, ct))
                 {
                     if (chunk.TextDelta is not null)
+                    {
                         textBuffer.Append(chunk.TextDelta);
+                        if (canStream)
+                        {
+                            if (!responseStarted)
+                            {
+                                context.BeginResponse?.Invoke();
+                                responseStarted = true;
+                            }
+                            context.StreamText!(chunk.TextDelta);
+                        }
+                    }
                     if (chunk.ToolCallDelta is not null)
                         toolCalls.Add(chunk.ToolCallDelta);
                     if (chunk.IsComplete)
                         break;
                 }
+
+                if (canStream && responseStarted) context.EndResponse?.Invoke();
+                else if (!canStream && textBuffer.Length > 0) context.WriteOutput(textBuffer.ToString());
 
                 subSession.AddMessage(new Message
                 {
@@ -97,11 +113,17 @@ public sealed class AgentTool : ToolBase
                     break;
                 }
 
+                var toolSummary = string.Join(", ", toolCalls
+                    .GroupBy(c => c.Name)
+                    .Select(g => g.Count() > 1 ? $"{g.Key} ×{g.Count()}" : g.Key));
+                context.WriteOutput($"  [Agent: {description}] → {toolSummary}");
+
                 foreach (var call in toolCalls)
                 {
                     var tool = subTools.Resolve(call.Name);
                     if (tool is null)
                     {
+                        context.WriteOutput($"  [Agent: {description}] ✗ unknown tool: {call.Name}");
                         subSession.AddMessage(new Message
                         {
                             Role = MessageRole.Tool,
@@ -121,6 +143,7 @@ public sealed class AgentTool : ToolBase
                     ToolResult toolResult;
                     if (!decision.Allowed)
                     {
+                        context.WriteOutput($"  [Agent: {description}] ✗ {call.Name}: permission denied");
                         toolResult = ToolResult.Error($"Permission denied: {decision.Reason}");
                     }
                     else
