@@ -131,7 +131,7 @@ public sealed class TerminalRenderer : IRenderer
             while (!ct.IsCancellationRequested)
             {
                 var dots = new string('.', sequence[idx % sequence.Length]);
-                Console.Write($"\r  \u001b[2;36m⠿ Thinking{dots}\u001b[0m\u001b[K");
+                Console.Write($"\r  [2;36m⠿ Thinking{dots}[0m[K");
                 Console.Out.Flush();
                 idx++;
                 try { await Task.Delay(200, ct); }
@@ -148,7 +148,7 @@ public sealed class TerminalRenderer : IRenderer
             _thinkingCts.Dispose();
             _thinkingCts = null;
             _thinkingTask = null;
-            Console.Write("\r\u001b[K");
+            Console.Write("\r[K");
             Console.Out.Flush();
         }
     }
@@ -158,8 +158,8 @@ public sealed class TerminalRenderer : IRenderer
         if (!_thinkingActive)
         {
 
-            Console.Write("\u001b[s");
-            Console.Write("\n  \u001b[2;36m◈ Thinking\u001b[0m\n  \u001b[2;3;90m");
+            Console.Write("[s");
+            Console.Write("\n  [2;36m◈ Thinking[0m\n  [2;3;90m");
             _thinkingActive = true;
         }
         Console.Write(text);
@@ -170,11 +170,11 @@ public sealed class TerminalRenderer : IRenderer
     public void CollapseThinking(int charCount)
     {
         if (!_thinkingActive) return;
-        Console.Write("\u001b[0m");
-        Console.Write("\u001b[u\u001b[J");
+        Console.Write("[0m");
+        Console.Write("[u[J");
         var approxTok = charCount / 4;
         var tok = approxTok > 0 ? $" [{approxTok} tok]" : "";
-        Console.Write($"\n  \u001b[2;36m◈ Thinking{tok}\u001b[0m\n");
+        Console.Write($"\n  [2;36m◈ Thinking{tok}[0m\n");
         Console.Out.Flush();
         _thinkingActive = false;
         _thinkingChars = 0;
@@ -199,7 +199,7 @@ public sealed class TerminalRenderer : IRenderer
         _prefillTime = prefillTime;
         _streamStopwatch.Reset();
         _streamTokenCount = 0;
-        Console.Write("\r\u001b[K");
+        Console.Write("\r[K");
         _console.MarkupLine("");
         _console.MarkupLine("  [bold green]◆ Assistant[/]");
         _console.MarkupLine("  [dim green]─────────────────────────────────────────────────[/]");
